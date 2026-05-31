@@ -337,6 +337,7 @@ export default function Layout({ children }) {
   const [toastNotifications, setToastNotifications] = useState([]);
   const [recentBellNotifications, setRecentBellNotifications] = useState([]);
   const [feedActivityUnreadCount, setFeedActivityUnreadCount] = useState(0);
+  const [backgroundChatNotificationsCount, setBackgroundChatNotificationsCount] = useState(0);
   const [bellOpen, setBellOpen] = useState(false);
   const toastTimersRef = useRef(new Map());
   const toastDedupeRef = useRef(new Map());
@@ -346,6 +347,14 @@ export default function Layout({ children }) {
   const chatBadgeSuppressedRef = useRef(readSeenChatsBadgeCount() > 0);
   const chatBadgeSeenUnreadCountRef = useRef(readSeenChatsBadgeCount());
   const latestUnreadChatsCountRef = useRef(0);
+  const backgroundChatTitleDedupeRef = useRef(new Map());
+  const appIsActiveRef = useRef(
+    typeof document === "undefined"
+      ? true
+      : document.visibilityState === "visible" &&
+          (typeof document.hasFocus !== "function" || document.hasFocus())
+  );
+
 
   const isAuthPage =
     location.pathname === "/login" || location.pathname === "/register";
@@ -360,6 +369,53 @@ export default function Layout({ children }) {
   const shouldHideHeader = isChatsPage || isChatDetailsPage;
   const shouldHideLegalFooter = isChatsPage || isChatDetailsPage;
 
+  function isAppWindowActive() {
+    if (typeof document === "undefined") return true;
+
+    const isVisible = document.visibilityState === "visible";
+    const hasFocus = typeof document.hasFocus === "function" ? document.hasFocus() : true;
+
+    return isVisible && hasFocus;
+  }
+
+  function getChatNotificationDedupeKey(payload, chatId) {
+    return String(
+      payload?.messageId ||
+        payload?.id ||
+        payload?.sentAt ||
+        payload?.createdAt ||
+        payload?.messagePreview ||
+        payload?.text ||
+        `${chatId}:${Date.now()}`
+    );
+  }
+
+  function clearBackgroundChatTitleNotifications() {
+    backgroundChatTitleDedupeRef.current.clear();
+    setBackgroundChatNotificationsCount(0);
+  }
+
+  function registerBackgroundChatTitleNotification(payload, chatId) {
+    if (!isChatsPage) return;
+    if (appIsActiveRef.current) return;
+    if (!chatId) return;
+
+    const dedupeKey = getChatNotificationDedupeKey(payload, chatId);
+    const now = Date.now();
+    const previousAt = backgroundChatTitleDedupeRef.current.get(dedupeKey);
+
+    if (previousAt && now - previousAt < 10000) return;
+
+    backgroundChatTitleDedupeRef.current.set(dedupeKey, now);
+
+    for (const [key, value] of backgroundChatTitleDedupeRef.current.entries()) {
+      if (now - value > 60000) {
+        backgroundChatTitleDedupeRef.current.delete(key);
+      }
+    }
+
+    setBackgroundChatNotificationsCount((current) => Math.min(current + 1, 99));
+  }
 
   function isOwnChatNotificationPayload(payload) {
     const currentUserId = user?.id ? String(user.id).toLowerCase() : "";
@@ -420,9 +476,9 @@ export default function Layout({ children }) {
   const bellNotificationsCount = Number(navNotifications.profile || 0) + Number(feedActivityUnreadCount || 0);
 
   const totalNotifications = useMemo(() => {
-    const chatCount = isChatsPage ? 0 : Number(navNotifications.chats || 0);
+    const chatCount = Number(navNotifications.chats || 0) + Number(backgroundChatNotificationsCount || 0);
     return chatCount + Number(navNotifications.profile || 0) + Number(feedActivityUnreadCount || 0);
-  }, [feedActivityUnreadCount, isChatsPage, navNotifications.chats, navNotifications.profile]);
+  }, [backgroundChatNotificationsCount, feedActivityUnreadCount, navNotifications.chats, navNotifications.profile]);
 
   useEffect(() => {
     const safeCount = Math.min(totalNotifications, 99);
@@ -433,11 +489,34 @@ export default function Layout({ children }) {
     };
   }, [totalNotifications]);
 
+  useEffect(() => {
+    function updateAppActiveState() {
+      const isActive = isAppWindowActive();
+      appIsActiveRef.current = isActive;
+
+      if (isActive) {
+        clearBackgroundChatTitleNotifications();
+      }
+    }
+
+    updateAppActiveState();
+    window.addEventListener("focus", updateAppActiveState);
+    window.addEventListener("blur", updateAppActiveState);
+    document.addEventListener("visibilitychange", updateAppActiveState);
+
+    return () => {
+      window.removeEventListener("focus", updateAppActiveState);
+      window.removeEventListener("blur", updateAppActiveState);
+      document.removeEventListener("visibilitychange", updateAppActiveState);
+    };
+  }, []);
+
 
   useEffect(() => {
     return () => {
       toastTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
       toastTimersRef.current.clear();
+      backgroundChatTitleDedupeRef.current.clear();
     };
   }, []);
 
@@ -549,6 +628,8 @@ export default function Layout({ children }) {
       setToastNotifications([]);
       setRecentBellNotifications([]);
       setFeedActivityUnreadCount(0);
+      setBackgroundChatNotificationsCount(0);
+      backgroundChatTitleDedupeRef.current.clear();
       mutedChatIdsRef.current = new Set();
       chatBadgeSuppressedRef.current = false;
       chatBadgeSeenUnreadCountRef.current = 0;
@@ -639,9 +720,15 @@ export default function Layout({ children }) {
         return;
       }
 
-      // Если открыт именно этот чат, пуш не нужен: пользователь уже видит сообщение.
-      // На странице списка чатов и в других чатах уведомление показываем.
-      if (activeChatIdRef.current && activeChatIdRef.current === notificationChatId) return;
+      const isActiveChatOpen = activeChatIdRef.current && activeChatIdRef.current === notificationChatId;
+
+      // Если вкладка/окно не активно, а пользователь оставался на странице чатов,
+      // показываем счетчик в заголовке вкладки даже для уже открытого чата.
+      registerBackgroundChatTitleNotification(payload, notificationChatId);
+
+      // Если открыт именно этот чат и приложение активно, пуш не нужен: пользователь уже видит сообщение.
+      // При неактивной вкладке счетчик в title уже обновлен выше.
+      if (isActiveChatOpen) return;
 
       // Нижний бейдж чатов считается от количества сообщений, появившихся после последнего захода в чаты.
 
