@@ -132,6 +132,7 @@ export default function ChatsPage() {
     typeof window !== "undefined" ? window.innerWidth <= 760 : false
   );
   const [chatScrollRequest, setChatScrollRequest] = useState(null);
+  const [typingUsersByChatId, setTypingUsersByChatId] = useState({});
 
   const currentChatIdRef = useRef(null);
   const urlChatHandledRef = useRef(false);
@@ -148,9 +149,159 @@ export default function ChatsPage() {
   const handlingChatHistoryBackRef = useRef(false);
   const readBoundaryInProgressRef = useRef(false);
   const lastReadBoundaryMessageIdRef = useRef(null);
+  const typingStopTimerRef = useRef(null);
+  const typingStartedRef = useRef(false);
+  const typingKeepAliveAtRef = useRef(0);
+  const currentTypingChatIdRef = useRef(null);
+  const typingUserTimersRef = useRef(new Map());
 
   const currentDraft = selectedChat?.id ? (drafts[selectedChat.id] ?? "") : "";
   const pendingFiles = selectedChat?.id ? (pendingFilesByChatId[selectedChat.id] ?? []) : [];
+
+  const activeTypingUsers = useMemo(() => {
+    if (!selectedChat?.id) return [];
+
+    const chatId = String(selectedChat.id);
+    const typingUsers = Object.values(typingUsersByChatId[chatId] || {});
+
+    if (typingUsers.length === 0) return [];
+
+    const participantsById = new Map(
+      (selectedGroupDetails?.participants || []).map((participant) => [
+        String(participant.userId),
+        participant,
+      ])
+    );
+
+    return typingUsers.map((typingUser) => {
+      const participant = participantsById.get(String(typingUser.userId));
+
+      return {
+        ...typingUser,
+        userName: typingUser.userName || participant?.userName || selectedChat.name || "Пользователь",
+      };
+    });
+  }, [selectedChat?.id, selectedChat?.name, selectedGroupDetails?.participants, typingUsersByChatId]);
+
+  function removeTypingUser(chatId, typingUserId) {
+    if (!chatId || !typingUserId) return;
+
+    const timerKey = `${chatId}:${typingUserId}`;
+    const timerId = typingUserTimersRef.current.get(timerKey);
+
+    if (timerId) {
+      window.clearTimeout(timerId);
+      typingUserTimersRef.current.delete(timerKey);
+    }
+
+    setTypingUsersByChatId((prev) => {
+      const currentChatTypingUsers = prev[chatId];
+      if (!currentChatTypingUsers?.[typingUserId]) return prev;
+
+      const nextChatTypingUsers = { ...currentChatTypingUsers };
+      delete nextChatTypingUsers[typingUserId];
+
+      if (Object.keys(nextChatTypingUsers).length === 0) {
+        const next = { ...prev };
+        delete next[chatId];
+        return next;
+      }
+
+      return {
+        ...prev,
+        [chatId]: nextChatTypingUsers,
+      };
+    });
+  }
+
+  function rememberTypingUser(payload) {
+    const chatId = payload?.chatId ? String(payload.chatId) : null;
+    const typingUserId = payload?.userId ? String(payload.userId) : null;
+
+    if (!chatId || !typingUserId) return;
+    if (typingUserId === String(user?.id || "")) return;
+
+    if (payload?.isTyping === false) {
+      removeTypingUser(chatId, typingUserId);
+      return;
+    }
+
+    setTypingUsersByChatId((prev) => ({
+      ...prev,
+      [chatId]: {
+        ...(prev[chatId] || {}),
+        [typingUserId]: {
+          userId: typingUserId,
+          userName: payload?.userName || null,
+          updatedAtUtc: payload?.updatedAtUtc || new Date().toISOString(),
+        },
+      },
+    }));
+
+    const timerKey = `${chatId}:${typingUserId}`;
+    const previousTimerId = typingUserTimersRef.current.get(timerKey);
+    if (previousTimerId) {
+      window.clearTimeout(previousTimerId);
+    }
+
+    const timerId = window.setTimeout(() => {
+      removeTypingUser(chatId, typingUserId);
+    }, 4200);
+
+    typingUserTimersRef.current.set(timerKey, timerId);
+  }
+
+  async function sendTypingState(chatId, isTyping) {
+    if (!chatId) return;
+
+    const token = getToken();
+    if (!token) return;
+
+    try {
+      const connection = await ensureChatConnectionStarted(token);
+      await connection.invoke("SetTyping", String(chatId), Boolean(isTyping));
+    } catch (err) {
+      // Если backend еще без SetTyping, чат не должен ломаться.
+      console.debug("Chat typing state was not sent:", err);
+    }
+  }
+
+  function stopTypingNow() {
+    window.clearTimeout(typingStopTimerRef.current);
+    typingStopTimerRef.current = null;
+
+    if (!typingStartedRef.current || !currentTypingChatIdRef.current) {
+      return;
+    }
+
+    const chatId = currentTypingChatIdRef.current;
+    typingStartedRef.current = false;
+    currentTypingChatIdRef.current = null;
+    typingKeepAliveAtRef.current = 0;
+
+    sendTypingState(chatId, false);
+  }
+
+  function handleComposerTypingActivity() {
+    if (!selectedChat?.id) return;
+    if (selectedChat.type === "Group" && !groupCanSend) return;
+
+    const chatId = String(selectedChat.id);
+    const now = Date.now();
+
+    currentTypingChatIdRef.current = chatId;
+
+    if (!typingStartedRef.current || now - typingKeepAliveAtRef.current > 1400) {
+      typingStartedRef.current = true;
+      typingKeepAliveAtRef.current = now;
+      sendTypingState(chatId, true);
+    }
+
+    window.clearTimeout(typingStopTimerRef.current);
+    typingStopTimerRef.current = window.setTimeout(() => {
+      stopTypingNow();
+    }, 2100);
+  }
 
   function appendMessageUnique(incomingMessage) {
     if (!incomingMessage?.id) return;
@@ -211,6 +362,7 @@ export default function ChatsPage() {
   }
 
   function closeActiveChat() {
+    stopTypingNow();
     setSelectedChat(null);
     setMessages([]);
     setReplyTo(null);
@@ -222,6 +374,15 @@ export default function ChatsPage() {
     setChatScrollRequest(null);
     lastReadBoundaryMessageIdRef.current = null;
   }
+
+
+  useEffect(() => {
+    return () => {
+      stopTypingNow();
+      typingUserTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
+      typingUserTimersRef.current.clear();
+    };
+  }, []);
 
   useEffect(() => {
     autoResizeTextarea();
@@ -614,7 +775,7 @@ export default function ChatsPage() {
     const handleReceiveMessage = async (incomingMessage) => {
       const incomingChatId = incomingMessage?.chatId ? String(incomingMessage.chatId) : null;
       const isCurrentChat = incomingChatId && incomingChatId === String(currentChatIdRef.current || "");
-      const isOwnMessage = incomingMessage?.userId === user?.id;
+      const isOwnMessage = String(incomingMessage?.userId || "").toLowerCase() === String(user?.id || "").toLowerCase();
 
       if (isCurrentChat) {
         appendMessageUnique(incomingMessage);
@@ -709,6 +870,10 @@ export default function ChatsPage() {
       );
     };
 
+    const handleChatTypingChanged = (payload) => {
+      rememberTypingUser(payload);
+    };
+
     const handleChatReadStateChanged = (payload) => {
       const payloadChatId = payload?.chatId ? String(payload.chatId) : null;
       const readerUserId = payload?.userId ? String(payload.userId) : null;
@@ -767,6 +932,7 @@ export default function ChatsPage() {
         connection.on("ChatNotificationChanged", handleChatNotificationChanged);
         connection.on("ChatUpdated", handleChatUpdated);
         connection.on("ChatReadStateChanged", handleChatReadStateChanged);
+        connection.on("ChatTypingChanged", handleChatTypingChanged);
         connection.onreconnecting(handleReconnecting);
         connection.onreconnected(handleReconnected);
         connection.onclose(handleClose);
@@ -790,6 +956,7 @@ export default function ChatsPage() {
         connection.off("ChatNotificationChanged", handleChatNotificationChanged);
         connection.off("ChatUpdated", handleChatUpdated);
         connection.off("ChatReadStateChanged", handleChatReadStateChanged);
+        connection.off("ChatTypingChanged", handleChatTypingChanged);
         connection.onreconnecting(() => {});
         connection.onreconnected(() => {});
         connection.onclose(() => {});
@@ -808,6 +975,8 @@ export default function ChatsPage() {
         lastReadBoundaryMessageIdRef.current = null;
         return;
       }
+
+      stopTypingNow();
 
       const nextChatId = selectedChat.id;
       const previousChatId = currentChatIdRef.current;
@@ -1082,16 +1251,19 @@ export default function ChatsPage() {
     }
   }
 
-  async function handleSendMessage(e) {
-    e.preventDefault();
+  async function handleSendMessage(e, explicitDraft = null) {
+    e?.preventDefault?.();
 
-    if (!selectedChat) return;
-    if (!currentDraft.trim() && pendingFiles.length === 0) return;
-    if (selectedChat.type === "Group" && !groupCanSend) return;
+    const rawDraft = typeof explicitDraft === "string" ? explicitDraft : currentDraft;
+
+    if (!selectedChat) return false;
+    if (!rawDraft.trim() && pendingFiles.length === 0) return false;
+    if (selectedChat.type === "Group" && !groupCanSend) return false;
 
     try {
       setMessage("");
-      const textToSend = currentDraft.trim();
+      stopTypingNow();
+      const textToSend = rawDraft.trim();
       const replyToMessageId = replyTo?.id ?? null;
 
       if (pendingFiles.length > 0) {
@@ -1111,7 +1283,7 @@ export default function ChatsPage() {
 
         await loadChats({ showLoader: false });
         focusComposerSoon();
-        return;
+        return true;
       }
 
       const response = await sendChatMessage(selectedChat.id, {
@@ -1131,16 +1303,18 @@ export default function ChatsPage() {
 
       await loadChats({ showLoader: false });
       focusComposerSoon();
+      return true;
     } catch (err) {
       console.error(err);
       setMessage(`Не удалось отправить сообщение: ${err.message}`);
+      return false;
     }
   }
 
   function handleKeyDown(e) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSendMessage(e);
+      handleSendMessage(e, currentDraft);
     }
   }
 
@@ -1535,16 +1709,18 @@ export default function ChatsPage() {
     }
   }
 
-  function insertEmoji(emoji) {
+  function insertEmoji(emoji, options = {}) {
     if (!selectedChat?.id) return;
 
-    setDrafts((prev) => ({
-      ...prev,
-      [selectedChat.id]: `${prev[selectedChat.id] ?? ""}${emoji}`,
-    }));
+    if (!options.skipDraftUpdate) {
+      setDrafts((prev) => ({
+        ...prev,
+        [selectedChat.id]: `${prev[selectedChat.id] ?? ""}${emoji}`,
+      }));
+    }
 
     setTimeout(() => {
-      textareaRef.current?.focus();
+      textareaRef.current?.focus({ preventScroll: true });
       autoResizeTextarea();
     }, 0);
   }
@@ -1735,6 +1911,7 @@ export default function ChatsPage() {
                 isConnectionReady={isConnectionReady}
                 setSelectedChat={setSelectedChat}
                 targetUserPresence={targetUserPresence}
+                activeTypingUsers={activeTypingUsers}
               />
 
               {selectedChat.type === "Group" && groupSystemMessage && (
@@ -1786,6 +1963,8 @@ export default function ChatsPage() {
                 handleKeyDown={handleKeyDown}
                 handleComposerPaste={handleComposerPaste}
                 handleSendMessage={handleSendMessage}
+                onTypingActivity={handleComposerTypingActivity}
+                onTypingStopped={stopTypingNow}
                 pendingFiles={pendingFiles}
                 handleAttachmentSelect={handleAttachmentSelect}
                 removePendingFile={removePendingFile}

@@ -1,3 +1,4 @@
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { QUICK_EMOJIS, shortenText } from "../../utils/chatHelpers";
 import { getSafePreviewUrl } from "../../utils/safeUrl.js";
 
@@ -84,16 +85,145 @@ export default function ChatComposer({
   insertEmoji,
   isConnectionReady,
   handleSendMessage,
+  onTypingActivity,
+  onTypingStopped,
 }) {
   const composerDisabled = selectedChat?.type === "Group" && !groupCanSend;
+  const chatId = selectedChat?.id || null;
+  const [localDraft, setLocalDraft] = useState(currentDraft || "");
+  const localDraftRef = useRef(currentDraft || "");
+  const syncTimerRef = useRef(null);
+  const lastChatIdRef = useRef(chatId);
+
   const sendDisabled =
     !isConnectionReady ||
-    (!currentDraft.trim() && pendingFiles.length === 0) ||
+    (!localDraft.trim() && pendingFiles.length === 0) ||
     composerDisabled;
+
+  function resizeTextarea() {
+    const el = textareaRef?.current;
+    if (!el) return;
+
+    el.style.height = "0px";
+    el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+  }
+
+  function focusTextareaSoon() {
+    window.requestAnimationFrame(() => {
+      textareaRef?.current?.focus({ preventScroll: true });
+      resizeTextarea();
+    });
+  }
+
+  function syncDraftNow(value = localDraftRef.current) {
+    window.clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = null;
+    updateCurrentDraft(value);
+  }
+
+  function scheduleDraftSync(value) {
+    window.clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = window.setTimeout(() => {
+      syncTimerRef.current = null;
+      updateCurrentDraft(value);
+    }, 220);
+  }
+
+  function setDraftValue(value, options = {}) {
+    const { syncNow = false } = options;
+    localDraftRef.current = value;
+    setLocalDraft(value);
+
+    if (syncNow) {
+      syncDraftNow(value);
+      return;
+    }
+
+    scheduleDraftSync(value);
+  }
+
+  useEffect(() => {
+    return () => {
+      window.clearTimeout(syncTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (lastChatIdRef.current !== chatId) {
+      window.clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
+      lastChatIdRef.current = chatId;
+      const nextDraft = currentDraft || "";
+      localDraftRef.current = nextDraft;
+      setLocalDraft(nextDraft);
+      return;
+    }
+
+    // Внешний сброс черновика после успешной отправки должен сразу очищать локальное поле.
+    if ((currentDraft || "") === "" && localDraftRef.current !== "") {
+      localDraftRef.current = "";
+      setLocalDraft("");
+    }
+  }, [chatId, currentDraft]);
+
+  useLayoutEffect(() => {
+    resizeTextarea();
+  }, [localDraft, replyTo, chatId, pendingFiles.length]);
+
+  async function submitCurrentDraft(event) {
+    event?.preventDefault?.();
+
+    if (sendDisabled) return;
+
+    const draftToSend = localDraftRef.current;
+    syncDraftNow(draftToSend);
+    onTypingStopped?.();
+
+    const sent = await handleSendMessage(event, draftToSend);
+
+    if (sent) {
+      setDraftValue("", { syncNow: true });
+    }
+
+    focusTextareaSoon();
+  }
+
+  function handleTextareaChange(event) {
+    const nextValue = event.target.value;
+
+    if (nextValue !== localDraftRef.current) {
+      onTypingActivity?.();
+    }
+
+    setDraftValue(nextValue);
+  }
+
+  function handleTextareaKeyDown(event) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      submitCurrentDraft(event);
+      return;
+    }
+
+    handleKeyDown?.(event);
+  }
+
+  function keepComposerFocused(event) {
+    if (composerDisabled) return;
+    event.preventDefault();
+  }
+
+  function handleEmojiClick(emoji) {
+    onTypingActivity?.();
+    setDraftValue(`${localDraftRef.current}${emoji}`);
+    setShowEmojiPicker(false);
+    insertEmoji?.(emoji, { skipDraftUpdate: true });
+    focusTextareaSoon();
+  }
 
   return (
     <form
-      onSubmit={handleSendMessage}
+      onSubmit={submitCurrentDraft}
       className="chat-composer-form"
       style={{
         borderTop: "1px solid rgba(255,255,255,0.08)",
@@ -429,6 +559,7 @@ export default function ChatComposer({
         <button
           type="button"
           className="chat-composer-icon-button"
+          onPointerDown={keepComposerFocused}
           onClick={() => attachmentInputRef.current?.click()}
           disabled={composerDisabled}
           title="Прикрепить файлы"
@@ -445,9 +576,9 @@ export default function ChatComposer({
               : "Сообщение"
           }
           disabled={composerDisabled}
-          value={currentDraft}
-          onChange={(e) => updateCurrentDraft(e.target.value)}
-          onKeyDown={handleKeyDown}
+          value={localDraft}
+          onChange={handleTextareaChange}
+          onKeyDown={handleTextareaKeyDown}
           onPaste={handleComposerPaste}
           rows={1}
           style={{ opacity: composerDisabled ? 0.7 : 1 }}
@@ -457,6 +588,7 @@ export default function ChatComposer({
           <button
             type="button"
             className="chat-composer-icon-button"
+            onPointerDown={keepComposerFocused}
             onClick={() => setShowEmojiPicker((prev) => !prev)}
             title="Эмодзи"
           >
@@ -485,7 +617,8 @@ export default function ChatComposer({
                 <button
                   key={emoji}
                   type="button"
-                  onClick={() => insertEmoji(emoji)}
+                  onPointerDown={keepComposerFocused}
+                  onClick={() => handleEmojiClick(emoji)}
                 >
                   {emoji}
                 </button>
@@ -497,6 +630,7 @@ export default function ChatComposer({
         <button
           type="submit"
           className="chat-composer-icon-button chat-composer-icon-button--send"
+          onPointerDown={keepComposerFocused}
           disabled={sendDisabled}
           title="Отправить"
         >

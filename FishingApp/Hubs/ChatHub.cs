@@ -50,6 +50,41 @@ public class ChatHub : Hub
         return userId;
     }
 
+    private async Task<string> GetCurrentUserDisplayNameAsync(Guid userId)
+    {
+        var user = await _context.Users
+            .AsNoTracking()
+            .Where(x => x.Id == userId)
+            .Select(x => new
+            {
+                x.FirstName,
+                x.LastName,
+                x.UserName
+            })
+            .FirstOrDefaultAsync();
+
+        if (user == null)
+            return Context.User?.Identity?.Name ?? "Пользователь";
+
+        var fullName = $"{user.FirstName} {user.LastName}".Trim();
+
+        return string.IsNullOrWhiteSpace(fullName)
+            ? user.UserName ?? "Пользователь"
+            : fullName;
+    }
+
+    private async Task SendTypingChangedAsync(Guid chatId, Guid userId, bool isTyping)
+    {
+        await Clients.OthersInGroup(GetChatGroupName(chatId)).SendAsync("ChatTypingChanged", new
+        {
+            chatId,
+            userId,
+            userName = await GetCurrentUserDisplayNameAsync(userId),
+            isTyping,
+            updatedAtUtc = DateTime.UtcNow
+        });
+    }
+
     public override async Task OnConnectedAsync()
     {
         var userId = GetCurrentUserId();
@@ -152,7 +187,30 @@ public class ChatHub : Hub
         if (!Guid.TryParse(chatId, out var parsedChatId))
             return;
 
+        var userId = GetCurrentUserId();
+
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetChatGroupName(parsedChatId));
+
+        if (userId.HasValue)
+        {
+            await SendTypingChangedAsync(parsedChatId, userId.Value, false);
+        }
+    }
+
+    public async Task SetTyping(string chatId, bool isTyping)
+    {
+        var userId = GetCurrentUserId();
+        if (userId == null)
+            throw new HubException("Пользователь не авторизован.");
+
+        if (!Guid.TryParse(chatId, out var parsedChatId))
+            throw new HubException("Некорректный идентификатор чата.");
+
+        var hasAccess = await HasAccessToChatAsync(parsedChatId, userId.Value);
+        if (!hasAccess)
+            throw new HubException("Нет доступа к этому чату.");
+
+        await SendTypingChangedAsync(parsedChatId, userId.Value, isTyping);
     }
 
     private async Task<bool> HasAccessToChatAsync(Guid chatId, Guid userId)

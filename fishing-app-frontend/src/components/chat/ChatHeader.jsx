@@ -1,45 +1,51 @@
-import { getSafeImageUrl } from "../../utils/safeUrl.js";
+import { getSafeImageUrl } from "../../utils/safeUrl";
+
 function formatLastSeen(lastSeenAtUtc) {
-  if (!lastSeenAtUtc) return "не в сети";
+  if (!lastSeenAtUtc) return "Не в сети";
 
   const date = new Date(lastSeenAtUtc);
-  if (Number.isNaN(date.getTime())) return "не в сети";
+  if (Number.isNaN(date.getTime())) return "Не в сети";
 
   const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMinutes = Math.max(0, Math.floor(diffMs / 60000));
-  const time = date.toLocaleTimeString("ru-RU", {
+  const isToday =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+
+  const time = date.toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
   });
 
-  if (diffMinutes < 1) {
-    return "был только что";
+  if (isToday) {
+    return `Был(а) в сети сегодня в ${time}`;
   }
 
-  if (diffMinutes < 60) {
-    return `был ${diffMinutes} мин. назад`;
-  }
-
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-
-  if (date.toDateString() === now.toDateString()) {
-    return `был сегодня в ${time}`;
-  }
-
-  if (date.toDateString() === yesterday.toDateString()) {
-    return `был вчера в ${time}`;
-  }
-
-  const sameYear = date.getFullYear() === now.getFullYear();
-  const dateText = date.toLocaleDateString("ru-RU", {
-    day: "numeric",
-    month: "long",
-    ...(sameYear ? {} : { year: "numeric" }),
+  const formattedDate = date.toLocaleDateString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
   });
 
-  return `был ${dateText} в ${time}`;
+  return `Был(а) в сети ${formattedDate} в ${time}`;
+}
+
+function getTypingText(selectedChat, activeTypingUsers) {
+  const users = Array.isArray(activeTypingUsers) ? activeTypingUsers : [];
+
+  if (users.length === 0) return null;
+
+  if (selectedChat?.type === "Group") {
+    if (users.length === 1) {
+      return `${users[0]?.userName || "Пользователь"} печатает...`;
+    }
+
+    return users.length <= 3
+      ? `${users.length} участника печатают...`
+      : "Несколько участников печатают...";
+  }
+
+  return "Печатает...";
 }
 
 export default function ChatHeader({
@@ -49,36 +55,18 @@ export default function ChatHeader({
   goToUserProfile,
   setSelectedChat,
   targetUserPresence,
+  activeTypingUsers = [],
 }) {
-  const safeTargetAvatarUrl = getSafeImageUrl(selectedChat?.targetUserAvatarUrl);
+  const safeTargetAvatarUrl = getSafeImageUrl(selectedChat?.targetUserAvatarUrl || selectedChat?.avatarUrl);
+  const typingText = getTypingText(selectedChat, activeTypingUsers);
 
-  const statusText = selectedChat?.type === "Private" && selectedChat?.targetUserId
+  const presenceStatusText = selectedChat?.type === "Private" && selectedChat?.targetUserId
     ? targetUserPresence?.isOnline
       ? "В сети"
-      : formatLastSeen(targetUserPresence?.lastSeenAtUtc || targetUserPresence?.lastSeenAt)
+      : formatLastSeen(targetUserPresence?.lastSeenAtUtc)
     : null;
 
-  const canOpenAvatar = Boolean(
-    selectedChat?.targetUserId ||
-    (selectedChat?.type === "Group" && selectedChat?.id)
-  );
-
-  function openChatAvatarTarget() {
-    if (selectedChat?.targetUserId) {
-      goToUserProfile(selectedChat.targetUserId);
-      return;
-    }
-
-    if (selectedChat?.type === "Group" && selectedChat?.id) {
-      navigate(`/chats/${selectedChat.id}/details`);
-    }
-  }
-
-  const avatarButtonTitle = selectedChat?.targetUserId
-    ? "Открыть профиль"
-    : selectedChat?.type === "Group"
-      ? "Информация о чате"
-      : selectedChat?.name || "Чат";
+  const statusText = typingText || presenceStatusText;
 
   return (
     <div
@@ -126,42 +114,51 @@ export default function ChatHeader({
         </span>
       </button>
 
-      <button
-        type="button"
-        onClick={canOpenAvatar ? openChatAvatarTarget : undefined}
-        disabled={!canOpenAvatar}
-        title={avatarButtonTitle}
-        style={{
-          width: "46px",
-          height: "46px",
-          padding: 0,
-          border: "none",
-          borderRadius: "50%",
-          background: safeTargetAvatarUrl ? "transparent" : "#334155",
-          color: "#fff",
-          cursor: canOpenAvatar ? "pointer" : "default",
-          display: "grid",
-          placeItems: "center",
-          fontWeight: 700,
-          flexShrink: 0,
-          overflow: "hidden",
-        }}
-      >
-        {safeTargetAvatarUrl ? (
+      {safeTargetAvatarUrl ? (
+        <button
+          type="button"
+          onClick={() =>
+            selectedChat.targetUserId
+              ? goToUserProfile(selectedChat.targetUserId)
+              : selectedChat.type === "Group"
+                ? navigate(`/chats/${selectedChat.id}/details`)
+                : null
+          }
+          style={{
+            padding: 0,
+            border: "none",
+            background: "transparent",
+            cursor: selectedChat.targetUserId || selectedChat.type === "Group" ? "pointer" : "default",
+            flexShrink: 0,
+          }}
+        >
           <img
             src={safeTargetAvatarUrl}
             alt={selectedChat.name}
             style={{
-              width: "100%",
-              height: "100%",
+              width: "46px",
+              height: "46px",
               objectFit: "cover",
               borderRadius: "50%",
             }}
           />
-        ) : (
-          selectedChat.name?.[0]?.toUpperCase() || "C"
-        )}
-      </button>
+        </button>
+      ) : (
+        <div
+          style={{
+            width: "46px",
+            height: "46px",
+            borderRadius: "50%",
+            background: "#334155",
+            display: "grid",
+            placeItems: "center",
+            fontWeight: 700,
+            flexShrink: 0,
+          }}
+        >
+          {selectedChat.name?.[0]?.toUpperCase() || "C"}
+        </div>
+      )}
 
       <div style={{ minWidth: 0, overflow: "hidden" }}>
         {selectedChat.targetUserId ? (
@@ -226,7 +223,14 @@ export default function ChatHeader({
         )}
 
         {statusText && (
-          <div className="muted-text" style={{ fontSize: "13px" }}>
+          <div
+            className="muted-text"
+            style={{
+              fontSize: "13px",
+              color: typingText ? "#ffffff" : undefined,
+              fontWeight: typingText ? 700 : undefined,
+            }}
+          >
             {statusText}
           </div>
         )}

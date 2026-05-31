@@ -350,11 +350,27 @@ export default function Layout({ children }) {
   const isAuthPage =
     location.pathname === "/login" || location.pathname === "/register";
 
+  const isChatDetailsPage = /^\/chats\/[^/]+\/details\/?$/.test(location.pathname);
+
   const isChatsPage =
-    location.pathname === "/chats" || location.pathname.startsWith("/chats/");
+    !isChatDetailsPage &&
+    (location.pathname === "/chats" || location.pathname.startsWith("/chats/"));
 
-  const shouldHideBottomNav = isKeyboardOpen || (isChatsPage && isMobileChatOpen);
+  const shouldHideBottomNav = isKeyboardOpen || isChatDetailsPage || (isChatsPage && isMobileChatOpen);
+  const shouldHideHeader = isChatsPage || isChatDetailsPage;
+  const shouldHideLegalFooter = isChatsPage || isChatDetailsPage;
 
+
+  function isOwnChatNotificationPayload(payload) {
+    const currentUserId = user?.id ? String(user.id).toLowerCase() : "";
+    const senderUserId = payload?.senderUserId ?? payload?.userId ?? payload?.senderId ?? payload?.fromUserId;
+
+    if (!currentUserId || senderUserId == null) {
+      return false;
+    }
+
+    return String(senderUserId).toLowerCase() === currentUserId;
+  }
 
   function dismissToast(id) {
     const timerId = toastTimersRef.current.get(id);
@@ -615,6 +631,10 @@ export default function Layout({ children }) {
       const notificationChatId = payload?.chatId ? String(payload.chatId) : null;
       if (!notificationChatId) return;
 
+      if (isOwnChatNotificationPayload(payload)) {
+        return;
+      }
+
       if (payload?.isMuted || mutedChatIdsRef.current.has(notificationChatId)) {
         return;
       }
@@ -655,6 +675,7 @@ export default function Layout({ children }) {
       scheduleRefresh();
       showChatToastFromPayload({
         ...payload,
+        senderUserId: payload?.senderUserId ?? payload?.userId,
         messageId: payload?.id || payload?.messageId,
         messagePreview: payload?.messagePreview || payload?.text || payload?.message,
         senderName: payload?.senderName || payload?.userName,
@@ -747,11 +768,14 @@ export default function Layout({ children }) {
     <div
       style={{
         minHeight: "100dvh",
-        paddingBottom: isAuthPage || shouldHideBottomNav ? 0 : "90px",
-        overflow: "hidden",
+        paddingBottom: isAuthPage || shouldHideBottomNav || isChatDetailsPage ? 0 : "90px",
+        overflowX: isChatDetailsPage ? "clip" : "hidden",
+        overflowY: "visible",
+        maxWidth: isChatDetailsPage ? "100%" : undefined,
+        boxSizing: "border-box",
       }}
     >
-      {!isAuthPage && !isChatsPage && (
+      {!isAuthPage && !shouldHideHeader && (
         <header
           style={{
             position: "sticky",
@@ -918,11 +942,13 @@ export default function Layout({ children }) {
         >
           {children}
         </main>
+      ) : isChatDetailsPage ? (
+        <main className="chat-details-route-main">{children}</main>
       ) : (
         <main className="page-container">{children}</main>
       )}
 
-      {!isChatsPage && <LegalFooter />}
+      {!shouldHideLegalFooter && <LegalFooter />}
 
       {toastNotifications.length > 0 && (
         <div className="app-notification-toast-stack app-notification-toast-stack--top-right">

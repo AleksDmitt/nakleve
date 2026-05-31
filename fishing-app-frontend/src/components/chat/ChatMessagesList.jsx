@@ -848,16 +848,17 @@ export default function ChatMessagesList({
         }
 
         .chat-message-link {
-          color: #bfdbfe;
-          font-weight: 800;
+          color: rgba(147, 197, 253, 0.92);
+          font: inherit;
+          font-weight: inherit;
           text-decoration: underline;
-          text-decoration-color: rgba(191, 219, 254, 0.42);
-          text-underline-offset: 3px;
+          text-decoration-color: rgba(147, 197, 253, 0.34);
+          text-underline-offset: 2px;
         }
 
         .chat-message-link:hover {
-          color: #ffffff;
-          text-decoration-color: rgba(255, 255, 255, 0.72);
+          color: rgba(219, 234, 254, 0.98);
+          text-decoration-color: rgba(219, 234, 254, 0.56);
         }
 
         .chat-message-more-button {
@@ -865,16 +866,18 @@ export default function ChatMessagesList({
           margin-left: 5px;
           padding: 0;
           border: 0;
-          color: #bfdbfe;
+          color: rgba(203, 213, 225, 0.76);
           background: transparent;
           font: inherit;
-          font-weight: 900;
+          font-weight: inherit;
           cursor: pointer;
         }
 
         .chat-message-more-button:hover {
-          color: #ffffff;
+          color: rgba(226, 232, 240, 0.96);
           text-decoration: underline;
+          text-decoration-thickness: 1px;
+          text-underline-offset: 2px;
         }
 
         .chat-shared-entry-backdrop {

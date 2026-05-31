@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   addChatParticipants,
@@ -12,7 +12,7 @@ import {
   updateChatNotificationSettings,
   uploadChatAvatar,
 } from "../api/chatsApi";
-import { getFriends } from "../api/friendsApi";
+import { getFriends, searchUsersByUserName } from "../api/friendsApi";
 import AvatarCropEditor from "../components/AvatarCropEditor";
 import { useAuth } from "../context/AuthContext";
 import { getSafeImageUrl } from "../utils/safeUrl.js";
@@ -25,46 +25,31 @@ function roleLabel(role) {
   return "Участник";
 }
 
-function statusLabel(status) {
-  if (status === "Removed") return "Исключён";
-  if (status === "Left") return "Вышел";
-  return "Активен";
-}
-
 function getInitials(name) {
   return name?.trim()?.[0]?.toUpperCase() || "U";
 }
 
 function getDisplayName(person) {
   const fullName = `${person?.firstName || ""} ${person?.lastName || ""}`.trim();
-  return person?.displayName || fullName || person?.userName || "Пользователь";
+  return person?.displayName || person?.userName || person?.name || fullName || "Пользователь";
 }
 
-function ChatAvatar({ src, name, size = "large", className = "" }) {
+function getPersonUserId(person) {
+  return person?.userId || person?.id || person?.friendUserId || null;
+}
+
+function ChatAvatar({ src, name, size = "medium", className = "" }) {
   const safeSrc = src ? getSafeImageUrl(src) : "";
+  const classes = `chat-details-avatar chat-details-avatar--${size} ${className}`.trim();
 
   if (safeSrc) {
-    return (
-      <img
-        className={`chat-details-avatar chat-details-avatar--${size} ${className}`.trim()}
-        src={safeSrc}
-        alt={name || "Фото чата"}
-      />
-    );
+    return <img className={classes} src={safeSrc} alt={name || "Аватар"} />;
   }
 
-  return (
-    <div className={`chat-details-avatar chat-details-avatar--${size} chat-details-avatar--fallback ${className}`.trim()}>
-      {getInitials(name)}
-    </div>
-  );
+  return <div className={`${classes} chat-details-avatar--fallback`}>{getInitials(name)}</div>;
 }
 
-function ParticipantCard({
-  participant,
-  actionArea,
-  onOpenProfile,
-}) {
+function ParticipantCard({ participant, actions, onOpenProfile }) {
   return (
     <article className="chat-details-person-card">
       <button
@@ -82,14 +67,40 @@ function ParticipantCard({
           className="chat-details-person-card__name"
           onClick={() => onOpenProfile(participant.userId)}
         >
-          {participant.userName}
+          {participant.userName || "Пользователь"}
         </button>
-        <div className="chat-details-person-card__meta">{roleLabel(participant.role)}</div>
-        <div className="chat-details-person-card__meta">{participant.region || "Регион не указан"}</div>
+        <span>{roleLabel(participant.role)}</span>
+        <span>{participant.region || "Регион не указан"}</span>
       </div>
 
-      {actionArea && <div className="chat-details-person-card__actions">{actionArea}</div>}
+      {actions && <div className="chat-details-person-card__actions">{actions}</div>}
     </article>
+  );
+}
+
+function AddUserRow({ person, selected, disabled, onToggle }) {
+  const userId = getPersonUserId(person);
+  const displayName = getDisplayName(person);
+
+  return (
+    <label className={`chat-details-user-row ${selected ? "is-selected" : ""} ${disabled ? "is-disabled" : ""}`}>
+      <ChatAvatar src={person.avatarUrl} name={displayName} size="small" />
+
+      <span className="chat-details-user-row__info">
+        <strong>{displayName}</strong>
+        <small>{person.region || person.userName || "Регион не указан"}</small>
+      </span>
+
+      <span className="chat-details-checkbox">
+        <input
+          type="checkbox"
+          checked={selected}
+          disabled={disabled || !userId}
+          onChange={() => userId && onToggle(userId)}
+        />
+        <span />
+      </span>
+    </label>
   );
 }
 
@@ -101,17 +112,22 @@ export default function ChatDetailsPage() {
   const [chat, setChat] = useState(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
-  const [leaving, setLeaving] = useState(false);
+
+  const [editing, setEditing] = useState(false);
+  const [savingChat, setSavingChat] = useState(false);
   const [deletingChat, setDeletingChat] = useState(false);
+  const [leaving, setLeaving] = useState(false);
   const [mutingChat, setMutingChat] = useState(false);
 
   const [friends, setFriends] = useState([]);
   const [loadingFriends, setLoadingFriends] = useState(false);
-  const [selectedFriendIds, setSelectedFriendIds] = useState([]);
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [selectedUserIds, setSelectedUserIds] = useState([]);
   const [addingParticipants, setAddingParticipants] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
 
-  const [editing, setEditing] = useState(false);
-  const [savingChat, setSavingChat] = useState(false);
   const [changingRoleUserId, setChangingRoleUserId] = useState(null);
   const [removingUserId, setRemovingUserId] = useState(null);
   const [transferringOwnershipUserId, setTransferringOwnershipUserId] = useState(null);
@@ -122,6 +138,8 @@ export default function ChatDetailsPage() {
   const [avatarCropSourceUrl, setAvatarCropSourceUrl] = useState("");
   const [avatarCropFileName, setAvatarCropFileName] = useState("");
   const avatarInputRef = useRef(null);
+  const backGuardInstalledRef = useRef(false);
+  const closeInProgressRef = useRef(false);
 
   const [editForm, setEditForm] = useState({
     name: "",
@@ -130,35 +148,63 @@ export default function ChatDetailsPage() {
     canMembersInvite: false,
   });
 
-  useEffect(() => {
-    async function loadDetails() {
-      try {
-        setLoading(true);
-        setMessage("");
+  async function loadDetails() {
+    try {
+      setLoading(true);
+      setMessage("");
+      const data = await getChatDetails(chatId);
+      setChat(data);
+      setEditForm({
+        name: data.name || "",
+        description: data.description || "",
+        avatarUrl: data.avatarUrl || "",
+        canMembersInvite: !!data.canMembersInvite,
+      });
+    } catch (err) {
+      console.error(err);
+      setMessage(`Не удалось загрузить информацию о чате: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
 
-        const data = await getChatDetails(chatId);
-        setChat(data);
-        setEditForm({
-          name: data.name || "",
-          description: data.description || "",
-          avatarUrl: data.avatarUrl || "",
-          canMembersInvite: !!data.canMembersInvite,
-        });
-      } catch (err) {
-        console.error(err);
-        setMessage(`Не удалось загрузить информацию о чате: ${err.message}`);
-      } finally {
-        setLoading(false);
+  useEffect(() => {
+    loadDetails();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const body = document.body;
+
+    root.classList.add("chat-details-document");
+    body.classList.add("chat-details-document");
+
+    if (window.scrollX !== 0) {
+      window.scrollTo({ left: 0, top: window.scrollY, behavior: "auto" });
+    }
+
+    function keepPageAtLeft() {
+      if (window.scrollX !== 0) {
+        window.scrollTo({ left: 0, top: window.scrollY, behavior: "auto" });
       }
     }
 
-    loadDetails();
-  }, [chatId]);
+    window.addEventListener("resize", keepPageAtLeft);
+    window.visualViewport?.addEventListener("resize", keepPageAtLeft);
+
+    return () => {
+      window.removeEventListener("resize", keepPageAtLeft);
+      window.visualViewport?.removeEventListener("resize", keepPageAtLeft);
+      root.classList.remove("chat-details-document");
+      body.classList.remove("chat-details-document");
+    };
+  }, []);
 
   useEffect(() => {
     if (!avatarFile) {
       setAvatarPreviewUrl("");
-      return;
+      return undefined;
     }
 
     const objectUrl = URL.createObjectURL(avatarFile);
@@ -175,57 +221,183 @@ export default function ChatDetailsPage() {
     };
   }, [avatarCropSourceUrl]);
 
-  const myParticipant = chat?.participants?.find((x) => x.userId === user?.id);
+  const participants = chat?.participants || [];
+  const participantIds = useMemo(
+    () => new Set(participants.map((participant) => participant.userId)),
+    [participants]
+  );
+
+  const myParticipant = participants.find((participant) => participant.userId === user?.id);
   const isOwner = myParticipant?.role === "Owner";
   const isAdmin = myParticipant?.role === "Admin";
   const isDeletedByOwner = !!chat?.isDeletedByOwner;
   const currentUserStatus = chat?.currentUserStatus || myParticipant?.status || "Active";
-  const canSendMessages = !!chat?.canSendMessages;
 
-  const canEditChat = !isDeletedByOwner && (isOwner || isAdmin) && currentUserStatus === "Active";
+  const canEditChat = !isDeletedByOwner && currentUserStatus === "Active" && (isOwner || isAdmin);
   const canInvite =
     !isDeletedByOwner &&
-    (canEditChat || (myParticipant?.role === "Member" && chat?.canMembersInvite && currentUserStatus === "Active"));
+    currentUserStatus === "Active" &&
+    (canEditChat || (myParticipant?.role === "Member" && chat?.canMembersInvite));
 
   useEffect(() => {
-    async function loadFriends() {
-      if (!chat || !canInvite) return;
+    if (!addModalOpen || !canInvite) return undefined;
 
+    let cancelled = false;
+
+    async function loadFriends() {
       try {
         setLoadingFriends(true);
         const data = await getFriends();
-        setFriends(Array.isArray(data) ? data : []);
+        if (!cancelled) setFriends(Array.isArray(data) ? data : []);
       } catch (err) {
         console.error(err);
-        setMessage(`Не удалось загрузить друзей: ${err.message}`);
+        if (!cancelled) setMessage(`Не удалось загрузить друзей: ${err.message}`);
       } finally {
-        setLoadingFriends(false);
+        if (!cancelled) setLoadingFriends(false);
       }
     }
 
     loadFriends();
-  }, [chat, canInvite]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [addModalOpen, canInvite]);
+
+  useEffect(() => {
+    if (!addModalOpen) return undefined;
+
+    const normalized = searchText.trim().replace(/^@/, "");
+    if (normalized.length < 2) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        setSearchLoading(true);
+        const data = await searchUsersByUserName(normalized);
+        if (!cancelled) setSearchResults(Array.isArray(data) ? data : []);
+      } catch (err) {
+        console.error(err);
+        if (!cancelled) setMessage(`Не удалось выполнить поиск: ${err.message}`);
+      } finally {
+        if (!cancelled) setSearchLoading(false);
+      }
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [addModalOpen, searchText]);
 
   const availableFriends = useMemo(() => {
-    if (!chat) return [];
+    return friends.filter((friend) => {
+      const userId = getPersonUserId(friend);
+      return userId && !participantIds.has(userId);
+    });
+  }, [friends, participantIds]);
 
-    const participantIds = new Set(chat.participants.map((x) => x.userId));
-    return friends.filter((friend) => !participantIds.has(friend.userId));
-  }, [friends, chat]);
+  const availableSearchResults = useMemo(() => {
+    const seenIds = new Set();
 
-  const ownershipCandidates = useMemo(() => {
-    if (!chat?.participants) return [];
+    return searchResults.filter((person) => {
+      const userId = getPersonUserId(person);
+      if (!userId || participantIds.has(userId) || seenIds.has(userId) || userId === user?.id) {
+        return false;
+      }
 
-    return chat.participants.filter((participant) => participant.userId !== user?.id);
-  }, [chat, user]);
+      seenIds.add(userId);
+      return true;
+    });
+  }, [participantIds, searchResults, user?.id]);
+
+  const shownAvatarUrl = avatarPreviewUrl || editForm.avatarUrl || chat?.avatarUrl;
+  const chatReturnUrl = useMemo(
+    () => chatId ? `/chats?chatId=${encodeURIComponent(chatId)}` : "/chats",
+    [chatId]
+  );
+
+  const navigateBackToChat = useCallback(() => {
+    navigate(chatReturnUrl, { replace: true });
+  }, [chatReturnUrl, navigate]);
+
+  const closeChatInfoPage = useCallback(() => {
+    if (closeInProgressRef.current) return;
+
+    closeInProgressRef.current = true;
+
+    if (
+      backGuardInstalledRef.current &&
+      typeof window !== "undefined" &&
+      window.history.length > 1
+    ) {
+      window.history.back();
+      return;
+    }
+
+    navigateBackToChat();
+  }, [navigateBackToChat]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const currentState = window.history.state || {};
+
+    if (!currentState.fishchatChatDetailsGuard) {
+      const detailsState = {
+        ...currentState,
+        fishchatChatDetails: true,
+      };
+
+      window.history.replaceState(detailsState, "", window.location.href);
+      window.history.pushState(
+        {
+          ...detailsState,
+          fishchatChatDetailsGuard: true,
+        },
+        "",
+        window.location.href
+      );
+    }
+
+    backGuardInstalledRef.current = true;
+
+    function handleBackFromChatDetails() {
+      backGuardInstalledRef.current = false;
+      closeInProgressRef.current = true;
+      navigateBackToChat();
+    }
+
+    window.addEventListener("popstate", handleBackFromChatDetails);
+
+    return () => {
+      window.removeEventListener("popstate", handleBackFromChatDetails);
+      backGuardInstalledRef.current = false;
+    };
+  }, [navigateBackToChat]);
+
+  useEffect(() => {
+    function handleEscapeClose(event) {
+      if (event.key !== "Escape") return;
+      closeChatInfoPage();
+    }
+
+    window.addEventListener("keydown", handleEscapeClose);
+
+    return () => {
+      window.removeEventListener("keydown", handleEscapeClose);
+    };
+  }, [closeChatInfoPage]);
 
   function closeAvatarCropEditor() {
     setAvatarCropOpen(false);
     setAvatarCropFileName("");
     setAvatarCropSourceUrl((currentUrl) => {
-      if (currentUrl) {
-        URL.revokeObjectURL(currentUrl);
-      }
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
       return "";
     });
   }
@@ -247,9 +419,7 @@ export default function ChatDetailsPage() {
 
     closeAvatarCropEditor();
     setMessage("");
-
-    const sourceUrl = URL.createObjectURL(file);
-    setAvatarCropSourceUrl(sourceUrl);
+    setAvatarCropSourceUrl(URL.createObjectURL(file));
     setAvatarCropFileName(file.name || "chat-avatar.jpg");
     setAvatarCropOpen(true);
   }
@@ -264,12 +434,12 @@ export default function ChatDetailsPage() {
     setAvatarPreviewUrl("");
     setEditForm((prev) => ({ ...prev, avatarUrl: "" }));
     closeAvatarCropEditor();
-    if (avatarInputRef.current) {
-      avatarInputRef.current.value = "";
-    }
+    if (avatarInputRef.current) avatarInputRef.current.value = "";
   }
 
   function cancelEditing() {
+    if (!chat) return;
+
     setEditForm({
       name: chat.name || "",
       description: chat.description || "",
@@ -282,12 +452,31 @@ export default function ChatDetailsPage() {
     setEditing(false);
   }
 
-  function toggleFriend(userId) {
-    setSelectedFriendIds((prev) =>
+  function toggleSelectedUser(userId) {
+    setSelectedUserIds((prev) =>
       prev.includes(userId)
-        ? prev.filter((x) => x !== userId)
+        ? prev.filter((id) => id !== userId)
         : [...prev, userId]
     );
+  }
+
+  function openAddModal() {
+    if (typeof window !== "undefined" && window.scrollX !== 0) {
+      window.scrollTo({ left: 0, top: window.scrollY, behavior: "auto" });
+    }
+
+    setSelectedUserIds([]);
+    setSearchText("");
+    setSearchResults([]);
+    setAddModalOpen(true);
+  }
+
+  function closeAddModal() {
+    if (addingParticipants) return;
+    setAddModalOpen(false);
+    setSelectedUserIds([]);
+    setSearchText("");
+    setSearchResults([]);
   }
 
   async function handleToggleChatMuted() {
@@ -296,10 +485,8 @@ export default function ChatDetailsPage() {
     try {
       setMutingChat(true);
       setMessage("");
-
       const result = await updateChatNotificationSettings(chat.id, !chat.currentUserIsMuted);
       const isMuted = !!result?.isMuted;
-
       setChat((current) => current ? { ...current, currentUserIsMuted: isMuted } : current);
       window.dispatchEvent(new CustomEvent("fishchat-notifications-refresh"));
       setMessage(isMuted ? "Уведомления чата отключены" : "Уведомления чата включены");
@@ -312,13 +499,11 @@ export default function ChatDetailsPage() {
   }
 
   async function handleLeaveChat() {
-    const confirmed = window.confirm("Выйти из группового чата?");
-    if (!confirmed) return;
+    if (!window.confirm("Выйти из группового чата?")) return;
 
     try {
       setLeaving(true);
       setMessage("");
-
       await leaveChat(chatId);
       navigate("/chats");
     } catch (err) {
@@ -330,15 +515,11 @@ export default function ChatDetailsPage() {
   }
 
   async function handleDeleteGroupChat() {
-    const confirmed = window.confirm(
-      "Удалить чат для всех участников? История останется доступной только для чтения."
-    );
-    if (!confirmed) return;
+    if (!window.confirm("Удалить чат для всех участников? История останется доступной только для чтения.")) return;
 
     try {
       setDeletingChat(true);
       setMessage("");
-
       const updated = await deleteGroupChat(chatId);
       setChat(updated);
       setEditing(false);
@@ -357,7 +538,6 @@ export default function ChatDetailsPage() {
       setMessage("");
 
       let avatarUrl = editForm.avatarUrl || null;
-
       if (avatarFile) {
         const uploadResult = await uploadChatAvatar(avatarFile);
         avatarUrl = uploadResult.avatarUrl;
@@ -379,9 +559,9 @@ export default function ChatDetailsPage() {
       });
       setAvatarFile(null);
       setAvatarPreviewUrl("");
+      setEditing(false);
       window.dispatchEvent(new CustomEvent("fishchat-chat-updated", { detail: { chat: updated } }));
       window.dispatchEvent(new CustomEvent("fishchat-notifications-refresh"));
-      setEditing(false);
     } catch (err) {
       console.error(err);
       setMessage(`Не удалось обновить чат: ${err.message}`);
@@ -391,15 +571,14 @@ export default function ChatDetailsPage() {
   }
 
   async function handleAddParticipants() {
-    if (selectedFriendIds.length === 0) return;
+    if (selectedUserIds.length === 0) return;
 
     try {
       setAddingParticipants(true);
       setMessage("");
-
-      const updated = await addChatParticipants(chatId, selectedFriendIds);
+      const updated = await addChatParticipants(chatId, selectedUserIds);
       setChat(updated);
-      setSelectedFriendIds([]);
+      closeAddModal();
     } catch (err) {
       console.error(err);
       setMessage(`Не удалось добавить участников: ${err.message}`);
@@ -409,13 +588,11 @@ export default function ChatDetailsPage() {
   }
 
   async function handleRemoveParticipant(userId) {
-    const confirmed = window.confirm("Исключить участника из чата?");
-    if (!confirmed) return;
+    if (!window.confirm("Исключить участника из чата?")) return;
 
     try {
       setRemovingUserId(userId);
       setMessage("");
-
       const updated = await removeChatParticipant(chatId, userId);
       setChat(updated);
     } catch (err) {
@@ -432,13 +609,7 @@ export default function ChatDetailsPage() {
     try {
       setChangingRoleUserId(participant.userId);
       setMessage("");
-
-      const updated = await updateChatParticipantRole(
-        chatId,
-        participant.userId,
-        nextRole
-      );
-
+      const updated = await updateChatParticipantRole(chatId, participant.userId, nextRole);
       setChat(updated);
     } catch (err) {
       console.error(err);
@@ -449,18 +620,14 @@ export default function ChatDetailsPage() {
   }
 
   async function handleTransferOwnership(participant) {
-    const confirmed = window.confirm(
-      `Передать права владельца пользователю ${participant.userName}? После этого вы станете админом и сможете выйти из чата.`
-    );
-    if (!confirmed) return;
+    if (!window.confirm(`Передать права владельца пользователю ${participant.userName}?`)) return;
 
     try {
       setTransferringOwnershipUserId(participant.userId);
       setMessage("");
-
       const updated = await transferChatOwnership(chatId, participant.userId);
       setChat(updated);
-      setMessage(`Права владельца переданы пользователю ${participant.userName}. Теперь вы можете выйти из чата.`);
+      setMessage(`Права владельца переданы пользователю ${participant.userName}.`);
     } catch (err) {
       console.error(err);
       setMessage(`Не удалось передать права владельца: ${err.message}`);
@@ -471,32 +638,16 @@ export default function ChatDetailsPage() {
 
   function goToUserProfile(userId) {
     if (!userId) return;
-
-    if (user?.id === userId) {
-      navigate("/profile");
-      return;
-    }
-
-    navigate(`/users/${userId}`);
+    navigate(user?.id === userId ? "/profile" : `/users/${userId}`);
   }
 
   if (loading) {
-    return (
-      <div className="page-container chat-details-page">
-        <div className="chat-details-card chat-details-loading">Загрузка информации о чате...</div>
-      </div>
-    );
+    return <div className="chat-details-page"><div className="chat-details-loading">Загрузка информации о чате...</div></div>;
   }
 
   if (!chat) {
-    return (
-      <div className="page-container chat-details-page">
-        <div className="chat-details-card chat-details-loading">Чат не найден</div>
-      </div>
-    );
+    return <div className="chat-details-page"><div className="chat-details-loading">Чат не найден</div></div>;
   }
-
-  const shownAvatarUrl = avatarPreviewUrl || editForm.avatarUrl || chat.avatarUrl;
 
   return (
     <>
@@ -515,7 +666,89 @@ export default function ChatDetailsPage() {
         imageAlt="Выбранное фото чата"
       />
 
-      <div className="page-container chat-details-page">
+      {addModalOpen && (
+        <div className="chat-details-modal-backdrop" onMouseDown={closeAddModal}>
+          <section className="chat-details-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="chat-details-modal__head">
+              <div>
+                <p className="chat-details-kicker">Приглашения</p>
+                <h2>Добавить участника</h2>
+                <p>Выбери друга или найди пользователя по имени пользователя.</p>
+              </div>
+              <button type="button" className="chat-details-icon-button" onClick={closeAddModal} aria-label="Закрыть">×</button>
+            </div>
+
+            <label className="chat-details-field">
+              <span>Поиск пользователя</span>
+              <input
+                placeholder="Например: @username"
+                value={searchText}
+                onChange={(event) => setSearchText(event.target.value)}
+              />
+            </label>
+
+            <div className="chat-details-modal__body">
+              {searchText.trim().length >= 2 && (
+                <div className="chat-details-add-block">
+                  <div className="chat-details-add-block__title">Результаты поиска</div>
+                  {searchLoading ? (
+                    <p className="chat-details-empty">Ищем пользователя...</p>
+                  ) : availableSearchResults.length === 0 ? (
+                    <p className="chat-details-empty">Подходящих пользователей не найдено.</p>
+                  ) : (
+                    <div className="chat-details-user-list">
+                      {availableSearchResults.map((person) => {
+                        const userId = getPersonUserId(person);
+                        return (
+                          <AddUserRow
+                            key={userId}
+                            person={person}
+                            selected={selectedUserIds.includes(userId)}
+                            onToggle={toggleSelectedUser}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="chat-details-add-block">
+                <div className="chat-details-add-block__title">Друзья</div>
+                {loadingFriends ? (
+                  <p className="chat-details-empty">Загрузка друзей...</p>
+                ) : availableFriends.length === 0 ? (
+                  <p className="chat-details-empty">Нет друзей, которых можно добавить.</p>
+                ) : (
+                  <div className="chat-details-user-list">
+                    {availableFriends.map((friend) => {
+                      const userId = getPersonUserId(friend);
+                      return (
+                        <AddUserRow
+                          key={userId}
+                          person={friend}
+                          selected={selectedUserIds.includes(userId)}
+                          onToggle={toggleSelectedUser}
+                        />
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="chat-details-modal__actions">
+              <span>Выбрано: {selectedUserIds.length}</span>
+              <button type="button" className="chat-details-button chat-details-button--secondary" onClick={closeAddModal} disabled={addingParticipants}>Отмена</button>
+              <button type="button" className="chat-details-button chat-details-button--primary" onClick={handleAddParticipants} disabled={selectedUserIds.length === 0 || addingParticipants}>
+                {addingParticipants ? "Добавляем..." : "Добавить"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      <div className="chat-details-page">
         {chat.systemMessage && (
           <div className="chat-details-alert">
             <strong>Системное сообщение</strong>
@@ -526,18 +759,14 @@ export default function ChatDetailsPage() {
         <section className="chat-details-hero">
           <div className="chat-details-hero__main">
             <ChatAvatar src={chat.avatarUrl} name={chat.name} size="large" />
-
             <div className="chat-details-hero__content">
               <p className="chat-details-kicker">Информация о чате</p>
               <h1>{chat.name}</h1>
-              <p className="chat-details-description">
-                {chat.description || "Описание чата пока не добавлено."}
-              </p>
-
-              <div className="chat-details-stats chat-details-stats--compact">
+              <p className="chat-details-description">{chat.description || "Описание чата пока не добавлено."}</p>
+              <div className="chat-details-stats">
                 <div className="chat-details-stat">
                   <span>Участники</span>
-                  <strong>{chat.participants.length}</strong>
+                  <strong>{participants.length}</strong>
                 </div>
                 <div className="chat-details-stat">
                   <span>Приглашения</span>
@@ -548,34 +777,17 @@ export default function ChatDetailsPage() {
           </div>
 
           <div className="chat-details-hero__actions">
-            <button
-              type="button"
-              className="chat-details-button chat-details-button--secondary"
-              onClick={() => navigate(`/chats?chatId=${chat.id}`)}
-            >
+            <button type="button" className="chat-details-button chat-details-button--secondary" onClick={closeChatInfoPage}>
               Назад в чат
             </button>
-
             {isOwner && (
-              <button
-                type="button"
-                className="chat-details-button chat-details-button--danger"
-                onClick={handleDeleteGroupChat}
-                disabled={deletingChat || isDeletedByOwner}
-              >
+              <button type="button" className="chat-details-button chat-details-button--danger" onClick={handleDeleteGroupChat} disabled={deletingChat || isDeletedByOwner}>
                 {deletingChat ? "Удаляем..." : isDeletedByOwner ? "Чат удалён" : "Удалить чат"}
               </button>
             )}
-
             {currentUserStatus === "Active" && (
-              <button
-                type="button"
-                className="chat-details-button chat-details-button--secondary"
-                onClick={handleLeaveChat}
-                disabled={leaving || isDeletedByOwner || isOwner}
-                title={isOwner ? "Сначала передайте права владельца другому участнику" : "Выйти из чата"}
-              >
-                {leaving ? "Выходим..." : "Выйти из чата"}
+              <button type="button" className="chat-details-button chat-details-button--secondary" onClick={handleLeaveChat} disabled={leaving || isDeletedByOwner || isOwner} title={isOwner ? "Сначала передайте права владельца другому участнику" : "Выйти из чата"}>
+                {leaving ? "Выходим..." : "Выйти"}
               </button>
             )}
           </div>
@@ -584,18 +796,13 @@ export default function ChatDetailsPage() {
         {message && <div className="chat-details-message">{message}</div>}
 
         {currentUserStatus === "Active" && !isDeletedByOwner && (
-          <section className="chat-details-card chat-details-notification-card">
-            <label className={`chat-details-toggle chat-details-toggle--notification ${chat.currentUserIsMuted ? "is-muted" : ""}`}>
-              <input
-                type="checkbox"
-                checked={!!chat.currentUserIsMuted}
-                disabled={mutingChat}
-                onChange={handleToggleChatMuted}
-              />
+          <section className="chat-details-card">
+            <label className={`chat-details-toggle ${chat.currentUserIsMuted ? "is-muted" : ""}`}>
+              <input type="checkbox" checked={!!chat.currentUserIsMuted} disabled={mutingChat} onChange={handleToggleChatMuted} />
               <span className="chat-details-toggle__switch" />
               <span className="chat-details-toggle__content">
                 <strong>Отключить уведомления</strong>
-                <small>Новые сообщения останутся в чате, но всплывающие уведомления по этой группе не будут приходить.</small>
+                <small>Сообщения останутся в чате, но всплывающие уведомления по этой группе не будут приходить.</small>
               </span>
             </label>
           </section>
@@ -608,18 +815,7 @@ export default function ChatDetailsPage() {
                 <p className="chat-details-kicker">Управление</p>
                 <h2>Настройки чата</h2>
               </div>
-
-              <button
-                type="button"
-                className="chat-details-button chat-details-button--secondary"
-                onClick={() => {
-                  if (editing) {
-                    cancelEditing();
-                    return;
-                  }
-                  setEditing(true);
-                }}
-              >
+              <button type="button" className="chat-details-button chat-details-button--secondary" onClick={() => editing ? cancelEditing() : setEditing(true)}>
                 {editing ? "Отменить" : "Редактировать"}
               </button>
             </div>
@@ -628,82 +824,31 @@ export default function ChatDetailsPage() {
               <div className="chat-details-edit-form">
                 <label className="chat-details-field">
                   <span>Название чата</span>
-                  <input
-                    placeholder="Название чата"
-                    value={editForm.name}
-                    onChange={(e) =>
-                      setEditForm((prev) => ({ ...prev, name: e.target.value }))
-                    }
-                  />
+                  <input value={editForm.name} onChange={(event) => setEditForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="Название чата" />
                 </label>
 
                 <label className="chat-details-field">
                   <span>Описание</span>
-                  <textarea
-                    rows={4}
-                    placeholder="Кратко опиши тематику группы"
-                    value={editForm.description}
-                    onChange={(e) =>
-                      setEditForm((prev) => ({
-                        ...prev,
-                        description: e.target.value,
-                      }))
-                    }
-                  />
+                  <textarea rows={4} value={editForm.description} onChange={(event) => setEditForm((prev) => ({ ...prev, description: event.target.value }))} placeholder="Кратко опиши тематику группы" />
                 </label>
 
                 <div className="chat-details-avatar-editor">
-                  <input
-                    ref={avatarInputRef}
-                    className="chat-details-avatar-editor__input"
-                    type="file"
-                    accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
-                    onChange={handleAvatarChange}
-                  />
-
+                  <input ref={avatarInputRef} className="chat-details-avatar-editor__input" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" onChange={handleAvatarChange} />
                   <ChatAvatar src={shownAvatarUrl} name={editForm.name || chat.name} size="edit" />
-
                   <div className="chat-details-avatar-editor__content">
                     <div className="chat-details-avatar-editor__title">Фото чата</div>
-                    <p className="chat-details-avatar-editor__hint">
-                      Фото будет отображаться в списке чатов и в шапке группы.
-                    </p>
+                    <p>Фото будет отображаться в списке чатов и в шапке группы.</p>
                     <div className="chat-details-avatar-editor__actions">
-                      <button
-                        type="button"
-                        className="chat-details-avatar-editor__button"
-                        onClick={openAvatarPicker}
-                        disabled={savingChat}
-                      >
-                        <span>+</span>
+                      <button type="button" className="chat-details-avatar-editor__button" onClick={openAvatarPicker} disabled={savingChat}>
                         {shownAvatarUrl ? "Заменить фото" : "Добавить фото"}
                       </button>
-
-                      {shownAvatarUrl && (
-                        <button
-                          type="button"
-                          className="chat-details-avatar-editor__remove"
-                          onClick={clearAvatar}
-                          disabled={savingChat}
-                        >
-                          Удалить
-                        </button>
-                      )}
+                      {shownAvatarUrl && <button type="button" className="chat-details-avatar-editor__remove" onClick={clearAvatar} disabled={savingChat}>Удалить</button>}
                     </div>
                   </div>
                 </div>
 
                 <label className="chat-details-toggle">
-                  <input
-                    type="checkbox"
-                    checked={editForm.canMembersInvite}
-                    onChange={(e) =>
-                      setEditForm((prev) => ({
-                        ...prev,
-                        canMembersInvite: e.target.checked,
-                      }))
-                    }
-                  />
+                  <input type="checkbox" checked={editForm.canMembersInvite} onChange={(event) => setEditForm((prev) => ({ ...prev, canMembersInvite: event.target.checked }))} />
                   <span className="chat-details-toggle__switch" />
                   <span className="chat-details-toggle__content">
                     <strong>Участники могут приглашать других</strong>
@@ -712,20 +857,8 @@ export default function ChatDetailsPage() {
                 </label>
 
                 <div className="chat-details-actions-row">
-                  <button
-                    type="button"
-                    className="chat-details-button chat-details-button--secondary"
-                    onClick={cancelEditing}
-                    disabled={savingChat}
-                  >
-                    Отмена
-                  </button>
-                  <button
-                    type="button"
-                    className="chat-details-button chat-details-button--primary"
-                    onClick={handleSaveChat}
-                    disabled={savingChat || !editForm.name.trim()}
-                  >
+                  <button type="button" className="chat-details-button chat-details-button--secondary" onClick={cancelEditing} disabled={savingChat}>Отмена</button>
+                  <button type="button" className="chat-details-button chat-details-button--primary" onClick={handleSaveChat} disabled={savingChat || !editForm.name.trim()}>
                     {savingChat ? "Сохраняем..." : "Сохранить"}
                   </button>
                 </div>
@@ -734,119 +867,29 @@ export default function ChatDetailsPage() {
           </section>
         )}
 
-        {isOwner && !isDeletedByOwner && (
-          <section className="chat-details-card">
-            <div className="chat-details-section-head">
-              <div>
-                <p className="chat-details-kicker">Права доступа</p>
-                <h2>Передача прав владельца</h2>
-              </div>
-              <p>Сначала передайте права активному участнику, затем сможете выйти из чата.</p>
-            </div>
-
-            {ownershipCandidates.length === 0 ? (
-              <p className="chat-details-empty">Некому передать права владельца. Добавьте хотя бы одного участника.</p>
-            ) : (
-              <div className="chat-details-grid">
-                {ownershipCandidates.map((participant) => (
-                  <ParticipantCard
-                    key={participant.userId}
-                    participant={participant}
-                    onOpenProfile={goToUserProfile}
-                    actionArea={(
-                      <button
-                        type="button"
-                        className="chat-details-button chat-details-button--secondary chat-details-button--small"
-                        onClick={() => handleTransferOwnership(participant)}
-                        disabled={transferringOwnershipUserId === participant.userId}
-                      >
-                        {transferringOwnershipUserId === participant.userId
-                          ? "Передаём..."
-                          : "Сделать владельцем"}
-                      </button>
-                    )}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-        )}
-
-        {canInvite && (
-          <section className="chat-details-card">
-            <div className="chat-details-section-head">
-              <div>
-                <p className="chat-details-kicker">Приглашения</p>
-                <h2>Добавить участников</h2>
-              </div>
-              <span className="chat-details-count">Выбрано: {selectedFriendIds.length}</span>
-            </div>
-
-            {loadingFriends ? (
-              <p className="chat-details-empty">Загрузка друзей...</p>
-            ) : availableFriends.length === 0 ? (
-              <p className="chat-details-empty">Нет друзей, которых можно добавить.</p>
-            ) : (
-              <>
-                <div className="chat-details-friend-list">
-                  {availableFriends.map((friend) => {
-                    const checked = selectedFriendIds.includes(friend.userId);
-                    const displayName = getDisplayName(friend);
-
-                    return (
-                      <label
-                        key={friend.userId}
-                        className={`chat-details-friend ${checked ? "is-selected" : ""}`}
-                      >
-                        <ChatAvatar src={friend.avatarUrl} name={displayName} size="small" />
-
-                        <span className="chat-details-friend__info">
-                          <strong>{displayName}</strong>
-                          <small>{friend.region || friend.userName || "Регион не указан"}</small>
-                        </span>
-
-                        <span className="chat-details-checkbox">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleFriend(friend.userId)}
-                          />
-                          <span />
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-
-                <div className="chat-details-actions-row">
-                  <button
-                    type="button"
-                    className="chat-details-button chat-details-button--primary"
-                    onClick={handleAddParticipants}
-                    disabled={selectedFriendIds.length === 0 || addingParticipants}
-                  >
-                    {addingParticipants ? "Добавляем..." : "Добавить выбранных"}
-                  </button>
-                </div>
-              </>
-            )}
-          </section>
-        )}
-
         <section className="chat-details-card">
-          <div className="chat-details-section-head">
+          <div className="chat-details-section-head chat-details-section-head--participants">
             <div>
               <p className="chat-details-kicker">Состав группы</p>
               <h2>Участники</h2>
             </div>
-            <span className="chat-details-count">{chat.participants.length}</span>
+            <div className="chat-details-section-actions">
+              <span className="chat-details-count">{participants.length}</span>
+              {canInvite && <button type="button" className="chat-details-button chat-details-button--primary" onClick={openAddModal}>Добавить участника</button>}
+            </div>
           </div>
 
-          {chat.participants.length === 0 ? (
+          {participants.length === 0 ? (
             <p className="chat-details-empty">Участников нет.</p>
           ) : (
-            <div className="chat-details-grid">
-              {chat.participants.map((participant) => {
+            <div className="chat-details-participants-list">
+              {participants.map((participant) => {
+                const canTransferOwnership =
+                  !isDeletedByOwner &&
+                  isOwner &&
+                  participant.role !== "Owner" &&
+                  participant.userId !== user?.id;
+
                 const canToggleAdmin =
                   !isDeletedByOwner &&
                   isOwner &&
@@ -855,53 +898,30 @@ export default function ChatDetailsPage() {
 
                 const canRemoveParticipant =
                   !isDeletedByOwner &&
-                  (
-                    (isOwner &&
-                      participant.role !== "Owner" &&
-                      participant.userId !== user?.id) ||
-                    (isAdmin &&
-                      participant.role === "Member" &&
-                      participant.userId !== user?.id)
-                  );
+                  ((isOwner && participant.role !== "Owner" && participant.userId !== user?.id) ||
+                    (isAdmin && participant.role === "Member" && participant.userId !== user?.id));
 
-                const actionArea = (canToggleAdmin || canRemoveParticipant) ? (
+                const actions = canTransferOwnership || canToggleAdmin || canRemoveParticipant ? (
                   <>
-                    {canToggleAdmin && (
-                      <button
-                        type="button"
-                        className="chat-details-button chat-details-button--secondary chat-details-button--small"
-                        onClick={() => handleToggleAdmin(participant)}
-                        disabled={changingRoleUserId === participant.userId}
-                      >
-                        {changingRoleUserId === participant.userId
-                          ? "Сохраняем..."
-                          : participant.role === "Admin"
-                            ? "Снять админа"
-                            : "Назначить админом"}
+                    {canTransferOwnership && (
+                      <button type="button" className="chat-details-button chat-details-button--secondary chat-details-button--small" onClick={() => handleTransferOwnership(participant)} disabled={transferringOwnershipUserId === participant.userId}>
+                        {transferringOwnershipUserId === participant.userId ? "Передаём..." : "Сделать владельцем"}
                       </button>
                     )}
-
+                    {canToggleAdmin && (
+                      <button type="button" className="chat-details-button chat-details-button--secondary chat-details-button--small" onClick={() => handleToggleAdmin(participant)} disabled={changingRoleUserId === participant.userId}>
+                        {changingRoleUserId === participant.userId ? "Сохраняем..." : participant.role === "Admin" ? "Снять админа" : "Назначить админом"}
+                      </button>
+                    )}
                     {canRemoveParticipant && (
-                      <button
-                        type="button"
-                        className="chat-details-button chat-details-button--danger chat-details-button--small"
-                        onClick={() => handleRemoveParticipant(participant.userId)}
-                        disabled={removingUserId === participant.userId}
-                      >
+                      <button type="button" className="chat-details-button chat-details-button--danger chat-details-button--small" onClick={() => handleRemoveParticipant(participant.userId)} disabled={removingUserId === participant.userId}>
                         {removingUserId === participant.userId ? "Исключаем..." : "Исключить"}
                       </button>
                     )}
                   </>
                 ) : null;
 
-                return (
-                  <ParticipantCard
-                    key={participant.userId}
-                    participant={participant}
-                    onOpenProfile={goToUserProfile}
-                    actionArea={actionArea}
-                  />
-                );
+                return <ParticipantCard key={participant.userId} participant={participant} onOpenProfile={goToUserProfile} actions={actions} />;
               })}
             </div>
           )}
