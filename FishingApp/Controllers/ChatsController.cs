@@ -45,17 +45,17 @@ public class ChatsController : ControllerBase
         [".webp"] = new[] { "image/webp" },
         [".gif"] = new[] { "image/gif" },
 
-        [".mp4"] = new[] { "video/mp4" },
-        [".webm"] = new[] { "video/webm", "audio/webm" },
-        [".mov"] = new[] { "video/quicktime" },
-        [".avi"] = new[] { "video/x-msvideo" },
-        [".mkv"] = new[] { "video/x-matroska" },
+        [".mp4"] = new[] { "video/mp4", "audio/mp4", "audio/x-m4a" },
+        [".webm"] = new[] { "video/webm", "audio/webm", "application/octet-stream" },
+        [".mov"] = new[] { "video/quicktime", "video/mp4" },
+        [".avi"] = new[] { "video/x-msvideo", "video/avi" },
+        [".mkv"] = new[] { "video/x-matroska", "video/webm" },
 
-        [".mp3"] = new[] { "audio/mpeg" },
-        [".wav"] = new[] { "audio/wav", "audio/x-wav" },
-        [".ogg"] = new[] { "audio/ogg", "application/ogg" },
-        [".m4a"] = new[] { "audio/mp4", "audio/x-m4a" },
-        [".aac"] = new[] { "audio/aac" },
+        [".mp3"] = new[] { "audio/mpeg", "audio/mp3", "audio/x-mpeg" },
+        [".wav"] = new[] { "audio/wav", "audio/x-wav", "audio/wave" },
+        [".ogg"] = new[] { "audio/ogg", "application/ogg", "video/ogg" },
+        [".m4a"] = new[] { "audio/mp4", "audio/x-m4a", "audio/m4a", "application/octet-stream" },
+        [".aac"] = new[] { "audio/aac", "audio/aacp", "audio/x-aac", "application/octet-stream" },
 
         [".pdf"] = new[] { "application/pdf" },
         [".doc"] = new[] { "application/msword" },
@@ -287,7 +287,63 @@ public class ChatsController : ControllerBase
         if (string.IsNullOrWhiteSpace(contentType))
             return string.Empty;
 
-        return contentType.Split(';', StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+        return contentType
+            .Split(';', StringSplitOptions.RemoveEmptyEntries)[0]
+            .Trim()
+            .ToLowerInvariant();
+    }
+
+    private static bool IsAudioOrVideoExtension(string extension)
+    {
+        return extension is ".mp3" or ".wav" or ".ogg" or ".m4a" or ".aac" or ".webm" or ".mp4" or ".mov" or ".avi" or ".mkv";
+    }
+
+    private static bool IsVoiceCompatibleExtension(string extension)
+    {
+        return extension is ".webm" or ".mp3" or ".wav" or ".ogg" or ".m4a" or ".aac" or ".mp4";
+    }
+
+    private static bool IsAllowedContentTypeForExtension(
+        string extension,
+        string normalizedContentType,
+        IReadOnlyCollection<string> allowedContentTypes)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedContentType))
+            return false;
+
+        if (allowedContentTypes.Contains(normalizedContentType, StringComparer.OrdinalIgnoreCase))
+            return true;
+
+        // На мобильных браузерах голосовые записи часто приходят как audio/webm;codecs=opus,
+        // audio/mp4 или даже application/octet-stream, при этом расширение остается .webm/.m4a.
+        // Расширение у нас все равно проверяется по белому списку, поэтому здесь разрешаем
+        // только безопасные медиасочетания, а не любой произвольный файл.
+        if (IsAudioOrVideoExtension(extension) && normalizedContentType == "application/octet-stream")
+            return true;
+
+        if (extension is ".webm" or ".mp4")
+            return normalizedContentType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase) ||
+                   normalizedContentType.StartsWith("video/", StringComparison.OrdinalIgnoreCase);
+
+        if (extension is ".mp3" or ".wav" or ".ogg" or ".m4a" or ".aac")
+            return normalizedContentType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase) ||
+                   (extension == ".ogg" && normalizedContentType == "application/ogg");
+
+        if (extension is ".mov" or ".avi" or ".mkv")
+            return normalizedContentType.StartsWith("video/", StringComparison.OrdinalIgnoreCase);
+
+        return false;
+    }
+
+    private static bool IsVoiceCompatibleContentType(string extension, string normalizedContentType)
+    {
+        if (!IsVoiceCompatibleExtension(extension))
+            return false;
+
+        return normalizedContentType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase) ||
+               normalizedContentType == "application/octet-stream" ||
+               (extension == ".webm" && normalizedContentType == "video/webm") ||
+               (extension == ".ogg" && normalizedContentType == "application/ogg");
     }
 
     private BadRequestObjectResult? ValidateUploadedFile(
@@ -313,8 +369,7 @@ public class ChatsController : ControllerBase
 
         var normalizedContentType = NormalizeContentTypeHeader(file.ContentType);
 
-        if (string.IsNullOrWhiteSpace(normalizedContentType) ||
-            !allowedContentTypes.Contains(normalizedContentType, StringComparer.OrdinalIgnoreCase))
+        if (!IsAllowedContentTypeForExtension(extension, normalizedContentType, allowedContentTypes))
         {
             return BadRequest(new { message = "Тип файла не соответствует расширению." });
         }
@@ -381,15 +436,14 @@ public class ChatsController : ControllerBase
 
             var normalizedAttachmentContentType = NormalizeContentTypeHeader(attachment.ContentType);
 
-            if (string.IsNullOrWhiteSpace(normalizedAttachmentContentType) ||
-                !allowedContentTypes.Contains(normalizedAttachmentContentType, StringComparer.OrdinalIgnoreCase))
+            if (!IsAllowedContentTypeForExtension(extension, normalizedAttachmentContentType, allowedContentTypes))
             {
                 return BadRequest(new { message = "Тип вложения не соответствует расширению." });
             }
 
             if (attachment.IsVoiceMessage)
             {
-                if (!normalizedAttachmentContentType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase))
+                if (!IsVoiceCompatibleContentType(extension, normalizedAttachmentContentType))
                     return BadRequest(new { message = "Голосовое сообщение должно быть аудиофайлом." });
 
                 if (attachment.VoiceDurationMs is null or <= 0)
