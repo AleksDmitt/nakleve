@@ -2647,7 +2647,6 @@ function EntryEditorModal({ isOpen, mode, entry, onClose, onSubmit, saving }) {
             <div>
               <p className="profile-kicker">Место ловли</p>
               <h3>Выбор точки на карте</h3>
-              <p>Кликни по карте, используй кнопку геолокации на карте или позже выбери одну из сохранённых точек.</p>
             </div>
           </div>
 
