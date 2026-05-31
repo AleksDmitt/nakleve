@@ -410,6 +410,7 @@ export default function WeatherPage() {
         <div>
           <p className="weather-kicker">НаКлёве · погода</p>
           <h1>Погода для рыбалки</h1>
+          <h1>Погода для рыбалки</h1>
           <p>Поиск места, выбор точки на карте и подробный прогноз на нужную дату.</p>
         </div>
       </header>
