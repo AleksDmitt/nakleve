@@ -13,6 +13,9 @@ public class ChatMessageAttachment
     public string ContentType { get; set; } = null!;
     public long Size { get; set; }
 
-    public string AttachmentType { get; set; } = null!; // Image / Video / Document / Audio / Other
+    public string AttachmentType { get; set; } = null!; // Image / Video / Document / Audio / Voice / Other
+    public bool IsVoiceMessage { get; set; }
+    public int? VoiceDurationMs { get; set; }
+    public string? VoiceWaveform { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

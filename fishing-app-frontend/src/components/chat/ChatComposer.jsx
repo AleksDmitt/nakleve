@@ -46,6 +46,23 @@ function SmileIcon() {
   );
 }
 
+function MicIcon() {
+  return (
+    <svg className="chat-composer-icon-svg" width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 14.5a3.1 3.1 0 0 0 3.1-3.1V6.6a3.1 3.1 0 1 0-6.2 0v4.8A3.1 3.1 0 0 0 12 14.5Z" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M5.9 10.7a6.1 6.1 0 0 0 12.2 0M12 16.9v3.2M8.8 20.1h6.4" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg className="chat-composer-icon-svg" width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
+    </svg>
+  );
+}
+
 function SendIcon() {
   return (
     <svg
@@ -75,6 +92,7 @@ export default function ChatComposer({
   removePendingFile,
   attachmentInputRef,
   handleAttachmentSelect,
+  handleVoiceRecorded,
   textareaRef,
   currentDraft,
   updateCurrentDraft,
@@ -94,9 +112,18 @@ export default function ChatComposer({
   const localDraftRef = useRef(currentDraft || "");
   const syncTimerRef = useRef(null);
   const lastChatIdRef = useRef(chatId);
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false);
+  const [recordingMs, setRecordingMs] = useState(0);
+  const [recordingError, setRecordingError] = useState("");
+  const mediaRecorderRef = useRef(null);
+  const recordingStreamRef = useRef(null);
+  const recordingChunksRef = useRef([]);
+  const recordingStartedAtRef = useRef(0);
+  const recordingTimerRef = useRef(null);
 
   const sendDisabled =
     !isConnectionReady ||
+    isRecordingVoice ||
     (!localDraft.trim() && pendingFiles.length === 0) ||
     composerDisabled;
 
@@ -169,6 +196,199 @@ export default function ChatComposer({
   useLayoutEffect(() => {
     resizeTextarea();
   }, [localDraft, replyTo, chatId, pendingFiles.length]);
+
+  function formatVoiceDuration(ms) {
+    const totalSeconds = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  function getSupportedVoiceMimeType() {
+    if (typeof MediaRecorder === "undefined") return "";
+
+    const candidates = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/mp4",
+      "audio/ogg;codecs=opus",
+      "audio/ogg",
+    ];
+
+    return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+  }
+
+  function getVoiceFileExtension(mimeType) {
+    const value = String(mimeType || "").toLowerCase();
+    if (value.includes("mp4")) return "m4a";
+    if (value.includes("ogg")) return "ogg";
+    if (value.includes("mpeg")) return "mp3";
+    if (value.includes("wav")) return "wav";
+    return "webm";
+  }
+
+  function cleanupRecordingStream() {
+    recordingStreamRef.current?.getTracks?.().forEach((track) => track.stop());
+    recordingStreamRef.current = null;
+  }
+
+  function stopRecordingTimer() {
+    window.clearInterval(recordingTimerRef.current);
+    recordingTimerRef.current = null;
+  }
+
+  function buildFallbackWaveform(seed = 0) {
+    return Array.from({ length: 34 }, (_, index) => {
+      const value = Math.sin((index + 1) * 1.7 + seed) * 0.5 + 0.5;
+      return Math.max(12, Math.min(96, Math.round(22 + value * 64)));
+    });
+  }
+
+  async function buildVoiceWaveform(blob) {
+    try {
+      const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextCtor) return buildFallbackWaveform(blob.size || 0);
+
+      const buffer = await blob.arrayBuffer();
+      const audioContext = new AudioContextCtor();
+      const decoded = await audioContext.decodeAudioData(buffer.slice(0));
+      const channelData = decoded.getChannelData(0);
+      const barsCount = 34;
+      const blockSize = Math.max(1, Math.floor(channelData.length / barsCount));
+      const bars = [];
+
+      for (let i = 0; i < barsCount; i += 1) {
+        let sum = 0;
+        const start = i * blockSize;
+        const end = Math.min(channelData.length, start + blockSize);
+
+        for (let j = start; j < end; j += 1) {
+          sum += Math.abs(channelData[j]);
+        }
+
+        const average = sum / Math.max(1, end - start);
+        bars.push(Math.max(10, Math.min(100, Math.round(average * 360))));
+      }
+
+      await audioContext.close?.();
+      return bars;
+    } catch {
+      return buildFallbackWaveform(blob.size || 0);
+    }
+  }
+
+  async function startVoiceRecording() {
+    if (composerDisabled || isRecordingVoice) return;
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setRecordingError("Браузер не поддерживает запись голосовых сообщений.");
+      return;
+    }
+
+    try {
+      setRecordingError("");
+      onTypingStopped?.();
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = getSupportedVoiceMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+
+      recordingChunksRef.current = [];
+      recordingStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      recordingStartedAtRef.current = Date.now();
+      setRecordingMs(0);
+      setIsRecordingVoice(true);
+
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size > 0) {
+          recordingChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.start(250);
+
+      recordingTimerRef.current = window.setInterval(() => {
+        setRecordingMs(Date.now() - recordingStartedAtRef.current);
+      }, 250);
+    } catch (err) {
+      console.error(err);
+      cleanupRecordingStream();
+      stopRecordingTimer();
+      setIsRecordingVoice(false);
+      setRecordingError("Не удалось получить доступ к микрофону.");
+    }
+  }
+
+  async function stopVoiceRecording(options = {}) {
+    const { save = true } = options;
+    const recorder = mediaRecorderRef.current;
+
+    if (!recorder || recorder.state === "inactive") {
+      cleanupRecordingStream();
+      stopRecordingTimer();
+      setIsRecordingVoice(false);
+      return;
+    }
+
+    await new Promise((resolve) => {
+      recorder.onstop = async () => {
+        try {
+          const durationMs = Date.now() - recordingStartedAtRef.current;
+          const mimeType = recorder.mimeType || getSupportedVoiceMimeType() || "audio/webm";
+          const blob = new Blob(recordingChunksRef.current, { type: mimeType });
+
+          if (save && blob.size > 0 && durationMs >= 700) {
+            const extension = getVoiceFileExtension(mimeType);
+            const file = new File([blob], `voice-${Date.now()}.${extension}`, { type: mimeType });
+            const waveform = await buildVoiceWaveform(blob);
+
+            handleVoiceRecorded?.({
+              file,
+              durationMs,
+              waveform,
+            });
+          } else if (save && durationMs < 700) {
+            setRecordingError("Голосовое сообщение слишком короткое.");
+          }
+        } finally {
+          recordingChunksRef.current = [];
+          mediaRecorderRef.current = null;
+          cleanupRecordingStream();
+          stopRecordingTimer();
+          setIsRecordingVoice(false);
+          setRecordingMs(0);
+          resolve();
+        }
+      };
+
+      recorder.stop();
+    });
+  }
+
+  function handleVoiceButtonClick() {
+    if (isRecordingVoice) {
+      stopVoiceRecording({ save: true });
+      return;
+    }
+
+    startVoiceRecording();
+  }
+
+  function cancelVoiceRecording() {
+    stopVoiceRecording({ save: false });
+  }
+
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current?.state === "recording") {
+        mediaRecorderRef.current.stop();
+      }
+
+      cleanupRecordingStream();
+      stopRecordingTimer();
+    };
+  }, []);
 
   async function submitCurrentDraft(event) {
     event?.preventDefault?.();
@@ -295,7 +515,7 @@ export default function ChatComposer({
 
         .chat-composer-shell {
           display: grid;
-          grid-template-columns: auto minmax(0, 1fr) auto auto;
+          grid-template-columns: auto auto minmax(0, 1fr) auto auto;
           align-items: end;
           gap: 6px;
           min-height: 56px;
@@ -349,12 +569,84 @@ export default function ChatComposer({
           border-color: rgba(94, 234, 212, 0.24);
         }
 
+        .chat-voice-recorder {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 10px 12px;
+          border: 1px solid rgba(248, 113, 113, 0.24);
+          border-radius: 16px;
+          background: rgba(127, 29, 29, 0.18);
+          color: #fff;
+        }
+
+        .chat-voice-recorder__status {
+          min-width: 0;
+          display: flex;
+          align-items: center;
+          gap: 9px;
+          font-size: 13px;
+          font-weight: 900;
+        }
+
+        .chat-voice-recorder__dot {
+          width: 9px;
+          height: 9px;
+          border-radius: 50%;
+          background: #f87171;
+          box-shadow: 0 0 0 6px rgba(248, 113, 113, 0.12);
+        }
+
+        .chat-voice-recorder__actions {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-shrink: 0;
+        }
+
+        .chat-voice-recorder__button {
+          min-height: 34px;
+          padding: 0 12px;
+          border: 1px solid rgba(255,255,255,0.14);
+          border-radius: 999px;
+          color: #fff;
+          background: rgba(255,255,255,0.08);
+          font-size: 12px;
+          font-weight: 900;
+          cursor: pointer;
+        }
+
+        .chat-voice-recorder__button--save {
+          color: #052e16;
+          border-color: rgba(134, 239, 172, 0.56);
+          background: linear-gradient(135deg, #86efac, #5eead4);
+        }
+
+        .chat-composer-icon-button--recording {
+          color: #fecaca;
+          background: rgba(127, 29, 29, 0.32);
+        }
+
+        .chat-pending-voice {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr);
+          align-items: center;
+          gap: 10px;
+          min-height: 74px;
+          padding: 12px;
+          border-radius: 12px;
+          background: rgba(20, 184, 166, 0.1);
+          border: 1px solid rgba(94, 234, 212, 0.16);
+        }
+
         @media (max-width: 640px) {
           .chat-composer-form {
             padding: 10px 10px 12px !important;
           }
 
           .chat-composer-shell {
+            grid-template-columns: 38px 38px minmax(0, 1fr) 38px 38px;
             gap: 2px;
             border-radius: 22px;
           }
@@ -434,6 +726,7 @@ export default function ChatComposer({
           {pendingFiles.map((file) => {
             const isImage = file.previewType === "image";
             const isVideo = file.previewType === "video";
+            const isVoice = Boolean(file.isVoiceMessage);
             const safePreviewUrl = getSafePreviewUrl(file.previewUrl);
             const isSingle = pendingFiles.length === 1;
 
@@ -452,6 +745,16 @@ export default function ChatComposer({
                   boxSizing: "border-box",
                 }}
               >
+                {isVoice && (
+                  <div className="chat-pending-voice">
+                    <div style={{ width: "42px", height: "42px", borderRadius: "50%", display: "grid", placeItems: "center", color: "#052e16", background: "linear-gradient(135deg, #86efac, #5eead4)", fontSize: "20px" }}>🎙️</div>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ color: "#f8fafc", fontSize: "14px", fontWeight: 1000 }}>Голосовое сообщение</div>
+                      <div style={{ color: "rgba(203,213,225,0.78)", fontSize: "13px" }}>{formatVoiceDuration(file.voiceDurationMs)}</div>
+                    </div>
+                  </div>
+                )}
+
                 {(isImage || isVideo) && (
                   <div
                     style={{
@@ -496,7 +799,7 @@ export default function ChatComposer({
                   </div>
                 )}
 
-                {!isImage && !isVideo && (
+                {!isVoice && !isImage && !isVideo && (
                   <div
                     style={{
                       minHeight: "74px",
@@ -546,6 +849,40 @@ export default function ChatComposer({
         </div>
       )}
 
+      {recordingError && (
+        <div style={{ color: "#fecaca", fontSize: "13px", paddingLeft: "8px" }}>
+          {recordingError}
+        </div>
+      )}
+
+      {isRecordingVoice && (
+        <div className="chat-voice-recorder">
+          <div className="chat-voice-recorder__status">
+            <span className="chat-voice-recorder__dot" />
+            <span>Запись голосового · {formatVoiceDuration(recordingMs)}</span>
+          </div>
+
+          <div className="chat-voice-recorder__actions">
+            <button
+              type="button"
+              className="chat-voice-recorder__button"
+              onPointerDown={keepComposerFocused}
+              onClick={cancelVoiceRecording}
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              className="chat-voice-recorder__button chat-voice-recorder__button--save"
+              onPointerDown={keepComposerFocused}
+              onClick={() => stopVoiceRecording({ save: true })}
+            >
+              Готово
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="chat-composer-shell">
         <input
           ref={attachmentInputRef}
@@ -553,7 +890,7 @@ export default function ChatComposer({
           style={{ display: "none" }}
           onChange={handleAttachmentSelect}
           multiple
-          accept=".jpg,.jpeg,.png,.webp,.gif,.mp4,.webm,.mov,.avi,.mkv,.mp3,.wav,.ogg,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip,.rar"
+          accept=".jpg,.jpeg,.png,.webp,.gif,.mp4,.webm,.mov,.avi,.mkv,.mp3,.wav,.ogg,.m4a,.aac,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip,.rar"
         />
 
         <button
@@ -561,19 +898,32 @@ export default function ChatComposer({
           className="chat-composer-icon-button"
           onPointerDown={keepComposerFocused}
           onClick={() => attachmentInputRef.current?.click()}
-          disabled={composerDisabled}
+          disabled={composerDisabled || isRecordingVoice}
           title="Прикрепить файлы"
         >
           <PaperclipIcon />
+        </button>
+
+        <button
+          type="button"
+          className={`chat-composer-icon-button ${isRecordingVoice ? "chat-composer-icon-button--recording" : ""}`}
+          onPointerDown={keepComposerFocused}
+          onClick={handleVoiceButtonClick}
+          disabled={composerDisabled}
+          title={isRecordingVoice ? "Остановить запись" : "Записать голосовое"}
+        >
+          {isRecordingVoice ? <StopIcon /> : <MicIcon />}
         </button>
 
         <textarea
           ref={textareaRef}
           className="chat-scrollbar chat-composer-textarea"
           placeholder={
-            composerDisabled
-              ? (loadingGroupDetails ? "Загрузка..." : groupSystemMessage || "Отправка сообщений недоступна")
-              : "Сообщение"
+            isRecordingVoice
+              ? "Идет запись голосового..."
+              : composerDisabled
+                ? (loadingGroupDetails ? "Загрузка..." : groupSystemMessage || "Отправка сообщений недоступна")
+                : "Сообщение"
           }
           disabled={composerDisabled}
           value={localDraft}

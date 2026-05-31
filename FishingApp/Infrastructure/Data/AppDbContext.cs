@@ -457,6 +457,12 @@ public class AppDbContext : IdentityDbContext<AppUser, Microsoft.AspNetCore.Iden
                 .IsRequired()
                 .HasMaxLength(50);
 
+            entity.Property(x => x.IsVoiceMessage)
+                .HasDefaultValue(false);
+
+            entity.Property(x => x.VoiceWaveform)
+                .HasMaxLength(2000);
+
             entity.HasOne(x => x.ChatMessage)
                 .WithMany(x => x.Attachments)
                 .HasForeignKey(x => x.ChatMessageId)

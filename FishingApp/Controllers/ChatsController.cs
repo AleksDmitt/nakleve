@@ -46,7 +46,7 @@ public class ChatsController : ControllerBase
         [".gif"] = new[] { "image/gif" },
 
         [".mp4"] = new[] { "video/mp4" },
-        [".webm"] = new[] { "video/webm" },
+        [".webm"] = new[] { "video/webm", "audio/webm" },
         [".mov"] = new[] { "video/quicktime" },
         [".avi"] = new[] { "video/x-msvideo" },
         [".mkv"] = new[] { "video/x-matroska" },
@@ -54,6 +54,8 @@ public class ChatsController : ControllerBase
         [".mp3"] = new[] { "audio/mpeg" },
         [".wav"] = new[] { "audio/wav", "audio/x-wav" },
         [".ogg"] = new[] { "audio/ogg", "application/ogg" },
+        [".m4a"] = new[] { "audio/mp4", "audio/x-m4a" },
+        [".aac"] = new[] { "audio/aac" },
 
         [".pdf"] = new[] { "application/pdf" },
         [".doc"] = new[] { "application/msword" },
@@ -232,7 +234,10 @@ public class ChatsController : ControllerBase
             FileUrl = attachment.FileUrl,
             ContentType = attachment.ContentType,
             Size = attachment.Size,
-            AttachmentType = attachment.AttachmentType
+            AttachmentType = attachment.AttachmentType,
+            IsVoiceMessage = attachment.IsVoiceMessage,
+            VoiceDurationMs = attachment.VoiceDurationMs,
+            VoiceWaveform = attachment.VoiceWaveform
         };
     }
 
@@ -260,6 +265,31 @@ public class ChatsController : ControllerBase
             : safeName[..120];
     }
 
+    private static int? NormalizeVoiceDurationMs(int? value)
+    {
+        if (!value.HasValue)
+            return null;
+
+        return Math.Clamp(value.Value, 0, 10 * 60 * 1000);
+    }
+
+    private static string? NormalizeVoiceWaveform(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        var waveform = value.Trim();
+        return waveform.Length <= 2000 ? waveform : waveform[..2000];
+    }
+
+    private static string NormalizeContentTypeHeader(string? contentType)
+    {
+        if (string.IsNullOrWhiteSpace(contentType))
+            return string.Empty;
+
+        return contentType.Split(';', StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+    }
+
     private BadRequestObjectResult? ValidateUploadedFile(
         IFormFile? file,
         IReadOnlyDictionary<string, string[]> allowedContentTypesByExtension,
@@ -281,8 +311,10 @@ public class ChatsController : ControllerBase
             return BadRequest(new { message = extensionMessage });
         }
 
-        if (string.IsNullOrWhiteSpace(file.ContentType) ||
-            !allowedContentTypes.Contains(file.ContentType, StringComparer.OrdinalIgnoreCase))
+        var normalizedContentType = NormalizeContentTypeHeader(file.ContentType);
+
+        if (string.IsNullOrWhiteSpace(normalizedContentType) ||
+            !allowedContentTypes.Contains(normalizedContentType, StringComparer.OrdinalIgnoreCase))
         {
             return BadRequest(new { message = "Тип файла не соответствует расширению." });
         }
@@ -347,10 +379,27 @@ public class ChatsController : ControllerBase
                 return BadRequest(new { message = "Недопустимый тип вложения." });
             }
 
-            if (string.IsNullOrWhiteSpace(attachment.ContentType) ||
-                !allowedContentTypes.Contains(attachment.ContentType, StringComparer.OrdinalIgnoreCase))
+            var normalizedAttachmentContentType = NormalizeContentTypeHeader(attachment.ContentType);
+
+            if (string.IsNullOrWhiteSpace(normalizedAttachmentContentType) ||
+                !allowedContentTypes.Contains(normalizedAttachmentContentType, StringComparer.OrdinalIgnoreCase))
             {
                 return BadRequest(new { message = "Тип вложения не соответствует расширению." });
+            }
+
+            if (attachment.IsVoiceMessage)
+            {
+                if (!normalizedAttachmentContentType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase))
+                    return BadRequest(new { message = "Голосовое сообщение должно быть аудиофайлом." });
+
+                if (attachment.VoiceDurationMs is null or <= 0)
+                    return BadRequest(new { message = "Не удалось определить длительность голосового сообщения." });
+
+                if (attachment.VoiceDurationMs > 10 * 60 * 1000)
+                    return BadRequest(new { message = "Голосовое сообщение не должно быть длиннее 10 минут." });
+
+                if (!string.IsNullOrWhiteSpace(attachment.VoiceWaveform) && attachment.VoiceWaveform.Length > 2000)
+                    return BadRequest(new { message = "Некорректные данные голосового сообщения." });
             }
         }
 
@@ -805,9 +854,11 @@ public class ChatsController : ControllerBase
                         ? "🎣 Запись из ленты"
                         : !string.IsNullOrWhiteSpace(lastMessage.Text)
                             ? lastMessage.Text
-                            : lastMessage.Attachments.Count == 1
-                                ? "Вложение"
-                                : lastMessage.Attachments.Count > 1
+                            : lastMessage.Attachments.Count == 1 && lastMessage.Attachments.First().IsVoiceMessage
+                                ? "Голосовое сообщение"
+                                : lastMessage.Attachments.Count == 1
+                                    ? "Вложение"
+                                    : lastMessage.Attachments.Count > 1
                                     ? $"Вложения: {lastMessage.Attachments.Count}"
                                     : null);
 
@@ -1002,7 +1053,10 @@ public class ChatsController : ControllerBase
                         FileUrl = a.FileUrl,
                         ContentType = a.ContentType,
                         Size = a.Size,
-                        AttachmentType = a.AttachmentType
+                        AttachmentType = a.AttachmentType,
+                        IsVoiceMessage = a.IsVoiceMessage,
+                        VoiceDurationMs = a.VoiceDurationMs,
+                        VoiceWaveform = a.VoiceWaveform
                     })
                     .ToList()
             })
@@ -1270,9 +1324,12 @@ public class ChatsController : ControllerBase
                     FileName = NormalizeFileNameForDisplay(attachment.FileName),
                     StoredFileName = Path.GetFileName(attachment.StoredFileName ?? string.Empty),
                     FileUrl = attachment.FileUrl.Trim(),
-                    ContentType = attachment.ContentType.Trim(),
+                    ContentType = NormalizeContentTypeHeader(attachment.ContentType),
                     Size = attachment.Size,
-                    AttachmentType = attachment.AttachmentType,
+                    AttachmentType = attachment.IsVoiceMessage ? "Audio" : attachment.AttachmentType,
+                    IsVoiceMessage = attachment.IsVoiceMessage,
+                    VoiceDurationMs = attachment.IsVoiceMessage ? NormalizeVoiceDurationMs(attachment.VoiceDurationMs) : null,
+                    VoiceWaveform = attachment.IsVoiceMessage ? NormalizeVoiceWaveform(attachment.VoiceWaveform) : null,
                     CreatedAt = DateTime.UtcNow
                 };
 
@@ -1695,9 +1752,11 @@ public class ChatsController : ControllerBase
         var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
         var saved = await SaveChatFileAsync(file, "chat-attachments", extension);
 
-        var contentType = string.IsNullOrWhiteSpace(file.ContentType)
-            ? "application/octet-stream"
-            : file.ContentType;
+        var contentType = NormalizeContentTypeHeader(file.ContentType);
+        if (string.IsNullOrWhiteSpace(contentType))
+        {
+            contentType = "application/octet-stream";
+        }
 
         return Ok(new UploadChatAttachmentResponse
         {
@@ -1707,7 +1766,10 @@ public class ChatsController : ControllerBase
             FileUrl = saved.FileUrl,
             ContentType = contentType,
             Size = file.Length,
-            AttachmentType = GetAttachmentType(contentType)
+            AttachmentType = GetAttachmentType(contentType),
+            IsVoiceMessage = false,
+            VoiceDurationMs = null,
+            VoiceWaveform = null
         });
     }
 
@@ -2347,6 +2409,9 @@ public class ChatsController : ControllerBase
 
         if (message.SharedFishingEntryId.HasValue)
             return "Запись из ленты";
+
+        if (message.Attachments.Count == 1 && message.Attachments[0].IsVoiceMessage)
+            return "Голосовое сообщение";
 
         if (message.Attachments.Count == 1)
             return "Вложение";

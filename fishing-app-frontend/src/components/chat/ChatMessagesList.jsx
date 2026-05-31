@@ -361,6 +361,176 @@ function getFeedPageRoute() {
   return localStorage.getItem("fishingAppFeedRoute") || FEED_PAGE_ROUTE_FALLBACK;
 }
 
+function formatVoiceDuration(ms) {
+  const totalSeconds = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function parseVoiceWaveform(value) {
+  if (Array.isArray(value)) {
+    return value.map((x) => Number(x)).filter((x) => Number.isFinite(x));
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed.map((x) => Number(x)).filter((x) => Number.isFinite(x));
+      }
+    } catch {
+      // Формат старых сообщений: "12,34,56".
+    }
+
+    return value
+      .split(",")
+      .map((x) => Number(x.trim()))
+      .filter((x) => Number.isFinite(x));
+  }
+
+  return [];
+}
+
+function getVoiceWaveformBars(value) {
+  const parsed = parseVoiceWaveform(value);
+
+  if (parsed.length > 0) {
+    return parsed.slice(0, 40).map((x) => Math.max(10, Math.min(100, x)));
+  }
+
+  return Array.from({ length: 34 }, (_, index) => {
+    const wave = Math.sin((index + 1) * 1.65) * 0.5 + 0.5;
+    return Math.round(20 + wave * 58);
+  });
+}
+
+function VoiceMessageAttachment({ attachment, safeFileUrl, isMine, isDisabled }) {
+  const audioRef = useRef(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentMs, setCurrentMs] = useState(0);
+  const [durationMs, setDurationMs] = useState(attachment.voiceDurationMs || 0);
+  const bars = getVoiceWaveformBars(attachment.voiceWaveform);
+  const progress = durationMs > 0 ? Math.min(1, currentMs / durationMs) : 0;
+  const activeBars = Math.round(progress * bars.length);
+
+  function togglePlayback(event) {
+    event.stopPropagation();
+
+    const audio = audioRef.current;
+    if (!audio || !safeFileUrl || isDisabled) return;
+
+    if (audio.paused) {
+      audio.play().catch(() => {});
+      return;
+    }
+
+    audio.pause();
+  }
+
+  return (
+    <div
+      style={{
+        width: "min(100%, 360px)",
+        display: "grid",
+        gridTemplateColumns: "42px minmax(0, 1fr) auto",
+        alignItems: "center",
+        gap: "10px",
+        padding: "10px 12px",
+        borderRadius: "16px",
+        color: "#fff",
+        background: isMine
+          ? "linear-gradient(135deg, rgba(37,99,235,0.38), rgba(20,184,166,0.22))"
+          : "rgba(15, 23, 42, 0.72)",
+        border: "1px solid rgba(255,255,255,0.12)",
+      }}
+    >
+      <button
+        type="button"
+        onClick={togglePlayback}
+        disabled={!safeFileUrl || isDisabled}
+        style={{
+          width: "42px",
+          height: "42px",
+          padding: 0,
+          border: 0,
+          borderRadius: "50%",
+          display: "grid",
+          placeItems: "center",
+          color: "#052e16",
+          background: "linear-gradient(135deg, #86efac, #5eead4)",
+          cursor: safeFileUrl && !isDisabled ? "pointer" : "not-allowed",
+          fontSize: "16px",
+          fontWeight: 1000,
+          flexShrink: 0,
+        }}
+        title={isPlaying ? "Пауза" : "Воспроизвести"}
+      >
+        {isPlaying ? "❚❚" : "▶"}
+      </button>
+
+      <div style={{ minWidth: 0, display: "grid", gap: "6px" }}>
+        <div
+          style={{
+            height: "32px",
+            display: "flex",
+            alignItems: "center",
+            gap: "3px",
+            overflow: "hidden",
+          }}
+        >
+          {bars.map((bar, index) => (
+            <span
+              key={`${attachment.id}-bar-${index}`}
+              style={{
+                width: "3px",
+                height: `${Math.max(6, Math.round((bar / 100) * 30))}px`,
+                borderRadius: "999px",
+                background: index < activeBars
+                  ? "rgba(134, 239, 172, 0.95)"
+                  : "rgba(226, 232, 240, 0.36)",
+                flex: "0 0 3px",
+              }}
+            />
+          ))}
+        </div>
+
+        <div style={{ color: "rgba(226,232,240,0.72)", fontSize: "12px", fontWeight: 800 }}>
+          Голосовое сообщение
+        </div>
+      </div>
+
+      <div style={{ color: "rgba(226,232,240,0.84)", fontSize: "12px", fontWeight: 900 }}>
+        {formatVoiceDuration(durationMs || attachment.voiceDurationMs)}
+      </div>
+
+      {safeFileUrl && (
+        <audio
+          ref={audioRef}
+          src={safeFileUrl}
+          preload="metadata"
+          onLoadedMetadata={(event) => {
+            const nextDuration = Number(event.currentTarget.duration);
+            if (Number.isFinite(nextDuration) && nextDuration > 0) {
+              setDurationMs(Math.round(nextDuration * 1000));
+            }
+          }}
+          onTimeUpdate={(event) => {
+            setCurrentMs(Math.round(Number(event.currentTarget.currentTime || 0) * 1000));
+          }}
+          onPlay={() => setIsPlaying(true)}
+          onPause={() => setIsPlaying(false)}
+          onEnded={() => {
+            setIsPlaying(false);
+            setCurrentMs(0);
+          }}
+          style={{ display: "none" }}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function ChatMessagesList({
   loadingMessages,
   messages,
@@ -1679,6 +1849,29 @@ export default function ChatMessagesList({
                                       <div style={{ fontSize: "34px" }}>🎬</div>
                                     )}
 
+                                    <UploadOverlay />
+                                  </div>
+                                );
+                              }
+
+                              if (attachment.isVoiceMessage) {
+                                return (
+                                  <div
+                                    key={attachment.id}
+                                    style={{
+                                      position: "relative",
+                                      width: "100%",
+                                      maxWidth: "360px",
+                                      borderRadius: "16px",
+                                      overflow: "hidden",
+                                    }}
+                                  >
+                                    <VoiceMessageAttachment
+                                      attachment={attachment}
+                                      safeFileUrl={safeFileUrl}
+                                      isMine={isMine}
+                                      isDisabled={isPendingAttachment || isFailedAttachment}
+                                    />
                                     <UploadOverlay />
                                   </div>
                                 );

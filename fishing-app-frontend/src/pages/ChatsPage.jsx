@@ -1071,19 +1071,25 @@ export default function ChatsPage() {
     return `local-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
-  function buildPendingFile(file) {
+  function buildPendingFile(file, options = {}) {
     const type = file.type || "";
-    const previewType = type.startsWith("image/")
-      ? "image"
-      : type.startsWith("video/")
-        ? "video"
-        : null;
+    const isVoiceMessage = Boolean(options.isVoiceMessage);
+    const previewType = isVoiceMessage
+      ? "audio"
+      : type.startsWith("image/")
+        ? "image"
+        : type.startsWith("video/")
+          ? "video"
+          : null;
 
     return {
       localId: createLocalFileId(),
       file,
       previewUrl: previewType ? URL.createObjectURL(file) : null,
       previewType,
+      isVoiceMessage,
+      voiceDurationMs: Number.isFinite(Number(options.voiceDurationMs)) ? Math.max(0, Math.round(Number(options.voiceDurationMs))) : null,
+      voiceWaveform: Array.isArray(options.voiceWaveform) ? options.voiceWaveform.join(",") : (options.voiceWaveform || null),
     };
   }
 
@@ -1100,6 +1106,23 @@ export default function ChatsPage() {
     if (attachmentInputRef.current) {
       attachmentInputRef.current.value = "";
     }
+  }
+
+  function handleVoiceRecorded(recording) {
+    if (!selectedChat) return;
+    if (selectedChat.type === "Group" && !groupCanSend) return;
+    if (!recording?.file) return;
+
+    setMessage("");
+
+    const prepared = buildPendingFile(recording.file, {
+      isVoiceMessage: true,
+      voiceDurationMs: recording.durationMs,
+      voiceWaveform: recording.waveform,
+    });
+
+    setPendingFilesForCurrentChat([...pendingFiles, prepared]);
+    focusComposerSoon();
   }
 
   function handleComposerPaste(event) {
@@ -1188,11 +1211,16 @@ export default function ChatsPage() {
           contentType: fileItem.file.type || "application/octet-stream",
           size: fileItem.file.size,
           attachmentType:
-            fileItem.previewType === "image"
-              ? "Image"
-              : fileItem.previewType === "video"
-                ? "Video"
-                : "Document",
+            fileItem.isVoiceMessage
+              ? "Audio"
+              : fileItem.previewType === "image"
+                ? "Image"
+                : fileItem.previewType === "video"
+                  ? "Video"
+                  : "Document",
+          isVoiceMessage: Boolean(fileItem.isVoiceMessage),
+          voiceDurationMs: fileItem.voiceDurationMs || null,
+          voiceWaveform: fileItem.voiceWaveform || null,
           isUploading: true,
         },
       ],
@@ -1219,6 +1247,9 @@ export default function ChatsPage() {
             contentType: uploaded.contentType,
             size: uploaded.size,
             attachmentType: uploaded.attachmentType,
+            isVoiceMessage: Boolean(fileItem.isVoiceMessage),
+            voiceDurationMs: fileItem.voiceDurationMs || null,
+            voiceWaveform: fileItem.voiceWaveform || null,
           },
         ],
       });
@@ -1967,6 +1998,7 @@ export default function ChatsPage() {
                 onTypingStopped={stopTypingNow}
                 pendingFiles={pendingFiles}
                 handleAttachmentSelect={handleAttachmentSelect}
+                handleVoiceRecorded={handleVoiceRecorded}
                 removePendingFile={removePendingFile}
                 showEmojiPicker={showEmojiPicker}
                 setShowEmojiPicker={setShowEmojiPicker}
