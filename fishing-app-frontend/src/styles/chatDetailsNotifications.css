@@ -1,0 +1,19 @@
+.chat-details-notification-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.chat-details-toggle--notification {
+  margin: 0;
+  border: none;
+  border-radius: inherit;
+  background: transparent;
+}
+
+.chat-details-toggle--notification .chat-details-toggle__content strong {
+  color: #f8fafc;
+}
+
+.chat-details-toggle--notification.is-muted .chat-details-toggle__content strong {
+  color: #fecaca;
+}

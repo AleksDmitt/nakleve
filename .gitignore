@@ -1,0 +1,108 @@
+# =========================
+# Visual Studio / Rider
+# =========================
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# =========================
+# .NET / ASP.NET Core
+# =========================
+bin/
+obj/
+[Bb]uild/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa]rtifacts/
+
+# NuGet
+*.nupkg
+packages/
+.nuget/
+project.lock.json
+project.assets.json
+
+# Logs
+*.log
+logs/
+Logs/
+
+# Test results
+TestResults/
+coverage/
+coverage.xml
+coverage.cobertura.xml
+
+# =========================
+# App settings / secrets
+# =========================
+appsettings.Development.json
+appsettings.Local.json
+appsettings.Production.json
+appsettings.Staging.json
+
+# User secrets / certificates
+*.pfx
+*.p12
+*.key
+*.pem
+*.crt
+
+# =========================
+# Database / local files
+# =========================
+*.db
+*.sqlite
+*.sqlite3
+*.bak
+*.dump
+
+# =========================
+# Uploads / user files
+# =========================
+uploads/
+wwwroot/uploads/
+**/uploads/
+**/wwwroot/uploads/
+
+# =========================
+# React / Vite / Node
+# =========================
+node_modules/
+dist/
+build/
+.vite/
+.cache/
+
+# Env files
+.env
+.env.local
+.env.development
+.env.production
+
+# npm / yarn / pnpm logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# Temporary files
+# =========================
+*.tmp
+*.temp
+*.swp
+*.bak

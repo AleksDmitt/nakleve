@@ -1,0 +1,124 @@
+.profile-notification-settings-card {
+  display: grid;
+  gap: 18px;
+}
+
+.profile-notification-settings-list {
+  display: grid;
+  gap: 12px;
+}
+
+.profile-notification-toggle {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  padding: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 22px;
+  background: rgba(15, 23, 42, 0.58);
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.profile-notification-toggle:hover {
+  border-color: rgba(94, 234, 212, 0.35);
+  background: rgba(15, 23, 42, 0.78);
+  transform: translateY(-1px);
+}
+
+.profile-notification-toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.profile-notification-toggle__switch {
+  width: 52px;
+  height: 30px;
+  padding: 3px;
+  border-radius: 999px;
+  box-sizing: border-box;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(30, 41, 59, 0.95);
+  transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.profile-notification-toggle__switch::before {
+  content: "";
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(226, 232, 240, 0.92);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.25);
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+
+.profile-notification-toggle.active .profile-notification-toggle__switch {
+  border-color: rgba(74, 222, 128, 0.56);
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.95), rgba(20, 184, 166, 0.9));
+  box-shadow: 0 10px 26px rgba(34, 197, 94, 0.14);
+}
+
+.profile-notification-toggle.active .profile-notification-toggle__switch::before {
+  transform: translateX(22px);
+  background: #ffffff;
+}
+
+.profile-notification-toggle__content {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.profile-notification-toggle__content strong {
+  color: #f8fafc;
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.profile-notification-toggle__content small {
+  color: rgba(203, 213, 225, 0.78);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.profile-notification-toggle--nested {
+  margin-left: 24px;
+  background: rgba(15, 23, 42, 0.38);
+}
+
+.profile-notification-toggle.disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+  transform: none;
+}
+
+.profile-notification-settings-saving {
+  margin: 0;
+  color: rgba(203, 213, 225, 0.78);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.profile-settings-menu button:nth-child(1)::before { content: "✎"; }
+.profile-settings-menu button:nth-child(2)::before { content: "♙"; }
+.profile-settings-menu button:nth-child(3)::before { content: "🔔"; }
+.profile-settings-menu button:nth-child(4)::before { content: "✉"; }
+.profile-settings-menu button:nth-child(5)::before { content: "↪"; color: #f87171; }
+
+@media (max-width: 640px) {
+  .profile-notification-toggle {
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 12px;
+    padding: 14px;
+    border-radius: 20px;
+  }
+
+  .profile-notification-toggle--nested {
+    margin-left: 0;
+  }
+}
