@@ -20,6 +20,7 @@ const LEGAL_LINKS = [
 const MAX_VISIBLE_TOASTS = 3;
 const MAX_RECENT_BELL_NOTIFICATIONS = 10;
 const CHAT_BADGE_SEEN_STORAGE_KEY = "fishchatSeenUnreadChatsCount";
+const NOTIFICATION_SOUND_URL = "/sounds/notification.mp3";
 
 function readSeenChatsBadgeCount() {
   if (typeof window === "undefined") return 0;
@@ -348,6 +349,9 @@ export default function Layout({ children }) {
   const chatBadgeSeenUnreadCountRef = useRef(readSeenChatsBadgeCount());
   const latestUnreadChatsCountRef = useRef(0);
   const backgroundChatTitleDedupeRef = useRef(new Map());
+  const notificationAudioRef = useRef(null);
+  const notificationAudioUnlockedRef = useRef(false);
+  const previousTotalNotificationsRef = useRef(null);
   const appIsActiveRef = useRef(
     typeof document === "undefined"
       ? true
@@ -393,6 +397,19 @@ export default function Layout({ children }) {
   function clearBackgroundChatTitleNotifications() {
     backgroundChatTitleDedupeRef.current.clear();
     setBackgroundChatNotificationsCount(0);
+  }
+
+  function playNotificationSound() {
+    const audio = notificationAudioRef.current;
+
+    if (!audio) return;
+
+    audio.pause();
+    audio.currentTime = 0;
+
+    audio.play().catch((err) => {
+      console.debug("Notification sound was not played:", err);
+    });
   }
 
   function registerBackgroundChatTitleNotification(payload, chatId) {
@@ -488,6 +505,64 @@ export default function Layout({ children }) {
       document.title = "НаКлёве";
     };
   }, [totalNotifications]);
+
+  useEffect(() => {
+    const previousTotal = previousTotalNotificationsRef.current;
+    previousTotalNotificationsRef.current = Number(totalNotifications || 0);
+
+    if (previousTotal == null) return;
+    if (totalNotifications <= 0) return;
+    if (totalNotifications <= previousTotal) return;
+
+    playNotificationSound();
+  }, [totalNotifications]);
+
+  useEffect(() => {
+    const audio = new Audio(NOTIFICATION_SOUND_URL);
+    audio.preload = "auto";
+    audio.volume = 0.55;
+
+    notificationAudioRef.current = audio;
+
+    function unlockNotificationAudio() {
+      const currentAudio = notificationAudioRef.current;
+
+      if (!currentAudio || notificationAudioUnlockedRef.current) return;
+
+      const previousVolume = currentAudio.volume;
+      currentAudio.volume = 0;
+      currentAudio.currentTime = 0;
+
+      currentAudio
+        .play()
+        .then(() => {
+          currentAudio.pause();
+          currentAudio.currentTime = 0;
+          currentAudio.volume = previousVolume;
+          notificationAudioUnlockedRef.current = true;
+
+          window.removeEventListener("pointerdown", unlockNotificationAudio);
+          window.removeEventListener("touchstart", unlockNotificationAudio);
+          window.removeEventListener("keydown", unlockNotificationAudio);
+        })
+        .catch(() => {
+          currentAudio.volume = previousVolume;
+        });
+    }
+
+    window.addEventListener("pointerdown", unlockNotificationAudio, { passive: true });
+    window.addEventListener("touchstart", unlockNotificationAudio, { passive: true });
+    window.addEventListener("keydown", unlockNotificationAudio);
+
+    return () => {
+      window.removeEventListener("pointerdown", unlockNotificationAudio);
+      window.removeEventListener("touchstart", unlockNotificationAudio);
+      window.removeEventListener("keydown", unlockNotificationAudio);
+
+      notificationAudioRef.current?.pause();
+      notificationAudioRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     function updateAppActiveState() {
