@@ -1,7 +1,43 @@
 import { apiRequest } from "../utils/apiClient";
 
-export function getChats() {
-  return apiRequest("/Chats");
+function getChatFreshnessTime(chat) {
+  const candidates = [
+    chat?.lastMessageAt,
+    chat?.lastMessage?.sentAt,
+    chat?.lastMessage?.createdAt,
+    chat?.latestMessageAt,
+    chat?.latestMessage?.sentAt,
+    chat?.latestMessage?.createdAt,
+    chat?.sentAt,
+    chat?.updatedAt,
+    chat?.createdAt,
+  ];
+
+  for (const value of candidates) {
+    if (!value) continue;
+    const time = new Date(value).getTime();
+    if (!Number.isNaN(time)) return time;
+  }
+
+  return 0;
+}
+
+export function sortChatsByFreshness(items) {
+  return [...(Array.isArray(items) ? items : [])].sort((a, b) => {
+    const byTime = getChatFreshnessTime(b) - getChatFreshnessTime(a);
+    if (byTime !== 0) return byTime;
+
+    const aUnread = Number(a?.unreadCount || (a?.hasUnread ? 1 : 0));
+    const bUnread = Number(b?.unreadCount || (b?.hasUnread ? 1 : 0));
+    if (bUnread !== aUnread) return bUnread - aUnread;
+
+    return String(a?.name || "").localeCompare(String(b?.name || ""), "ru");
+  });
+}
+
+export async function getChats() {
+  const data = await apiRequest("/Chats");
+  return sortChatsByFreshness(data);
 }
 
 export function getChatMessages(chatId) {

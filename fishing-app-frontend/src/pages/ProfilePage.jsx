@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import YandexMap from "../components/YandexMap";
 import AvatarUploader from "../components/AvatarUploader";
 import MediaLightbox from "../components/MediaLightbox";
+import FishingEntryDetailsModal from "../components/FishingEntryDetailsModal";
 import {
   getProfile,
   updateProfile,
@@ -50,6 +51,7 @@ import {
   getSafeOptimizedImageUrl,
   useImageFallback,
 } from "../utils/safeUrl.js";
+import "../styles/FeedPage.css";
 import "../styles/profile.css";
 import "../styles/notificationSettings.css";
 
@@ -116,6 +118,10 @@ function getFeedEntryPath(entryId) {
   return `${feedRoute}?${params.toString()}`;
 }
 
+function getEntryShareTitle(entry) {
+  return `${entry?.title || "Запись о рыбалке"}${entry?.locationName ? ` · ${entry.locationName}` : ""}`;
+}
+
 
 function isEntryFormEmpty(form) {
   return !form.title?.trim()
@@ -180,6 +186,14 @@ function getDisplayName(user) {
   const fullName = `${user.firstName || ""} ${user.lastName || ""}`.trim();
 
   return user.displayName || fullName || user.userName || "Пользователь";
+}
+
+
+function getRestoredEntryDetails(historyKey) {
+  if (typeof window === "undefined") return null;
+  const state = window.history.state || {};
+  if (state.fishingEntryDetailsHistoryKey !== historyKey) return null;
+  return state.fishingEntryDetailsEntry || null;
 }
 
 function getBlockReasonText(profile) {
@@ -1742,7 +1756,7 @@ function EntryCard({
 
   return (
     <article
-      className="profile-entry-card profile-entry-card-clickable"
+      className={`profile-entry-card profile-entry-card-clickable ${menuOpen ? "profile-entry-card-menu-open" : ""}`}
       onClick={() => onOpenDetails?.(entry)}
       role="button"
       tabIndex={0}
@@ -1765,51 +1779,52 @@ function EntryCard({
           )}
         </div>
 
-        {canManage && (
-          <div className="profile-entry-menu-wrap" ref={menuRef} onClick={(event) => event.stopPropagation()}>
-            <button
-              className="profile-entry-menu-button"
-              onClick={() => setMenuOpen((value) => !value)}
-              type="button"
-              aria-label="Действия с записью"
-            >
-              ⋮
-            </button>
-
-            {menuOpen && (
-              <div className="profile-entry-menu">
-                <button onClick={(event) => stopAndRun(event, onEdit)} type="button">
-                  Редактировать
-                </button>
-                <button onClick={(event) => stopAndRun(event, onTogglePrivacy)} type="button">
-                  {entry.visibility === 0 ? "Сделать публичной" : "Сделать приватной"}
-                </button>
-                {entry.visibility !== 0 && (
-                  <button onClick={(event) => stopAndRun(event, onToggleFeed)} type="button">
-                    {entry.isPublishedToFeed ? "Убрать из ленты" : "Показать в ленте"}
-                  </button>
-                )}
-                {entry.visibility === 0 && (
-                  <button onClick={(event) => stopAndRun(event, onToggleFeed)} type="button">
-                    Сделать публичной и показать в ленте
-                  </button>
-                )}
-                {entry.isPublishedToFeed && (
-                  <button onClick={(event) => stopAndRun(event, onOpenFeed)} type="button">
-                    Посмотреть в ленте
-                  </button>
-                )}
-                <button onClick={(event) => stopAndRun(event, onShare)} type="button">
-                  Поделиться в чат
-                </button>
-                <button onClick={(event) => stopAndRun(event, onDelete)} type="button" className="danger">
-                  Удалить
-                </button>
-              </div>
-            )}
-          </div>
-        )}
       </div>
+
+      {canManage && (
+        <div className="profile-entry-menu-wrap" ref={menuRef} onClick={(event) => event.stopPropagation()}>
+          <button
+            className="profile-entry-menu-button"
+            onClick={() => setMenuOpen((value) => !value)}
+            type="button"
+            aria-label="Действия с записью"
+          >
+            ⋮
+          </button>
+
+          {menuOpen && (
+            <div className="profile-entry-menu">
+              <button onClick={(event) => stopAndRun(event, onEdit)} type="button">
+                Редактировать
+              </button>
+              <button onClick={(event) => stopAndRun(event, onTogglePrivacy)} type="button">
+                {entry.visibility === 0 ? "Сделать публичной" : "Сделать приватной"}
+              </button>
+              {entry.visibility !== 0 && (
+                <button onClick={(event) => stopAndRun(event, onToggleFeed)} type="button">
+                  {entry.isPublishedToFeed ? "Убрать из ленты" : "Показать в ленте"}
+                </button>
+              )}
+              {entry.visibility === 0 && (
+                <button onClick={(event) => stopAndRun(event, onToggleFeed)} type="button">
+                  Сделать публичной и показать в ленте
+                </button>
+              )}
+              {entry.isPublishedToFeed && (
+                <button onClick={(event) => stopAndRun(event, onOpenFeed)} type="button">
+                  Посмотреть в ленте
+                </button>
+              )}
+              <button onClick={(event) => stopAndRun(event, onShare)} type="button">
+                Поделиться в чат
+              </button>
+              <button onClick={(event) => stopAndRun(event, onDelete)} type="button" className="danger">
+                Удалить
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="profile-entry-body">
         <div className="profile-entry-topline">
@@ -1857,104 +1872,24 @@ function EntryCard({
   );
 }
 
-function EntryDetailsModal({ entry, isOpen, onClose, onOpenWeather, onOpenMap, onOpenFeed }) {
-  const [fullscreenViewer, setFullscreenViewer] = useState(null);
-
-  useEffect(() => {
-    if (!isOpen) {
-      setFullscreenViewer(null);
-    }
-  }, [isOpen]);
-
-  if (!isOpen || !entry) return null;
-
-  const fishingStart = entry.fishingStartedAt || entry.startTime || entry.fishingDate;
-  const fishingEnd = entry.fishingEndedAt || entry.endTime;
-  const hasWeatherPage = entry.latitude != null && entry.longitude != null;
-  const hasMapPoint = entry.latitude != null && entry.longitude != null;
-
+function EntryDetailsModal({ entry, isOpen, onClose, onOpenWeather, onOpenMap, onOpenFeed, onShare, authorLabel, authorAvatarUrl, authorUserId, onOpenAuthor }) {
   return (
-    <div className="profile-modal-backdrop" onClick={onClose}>
-      <article className="profile-modal-card profile-entry-details-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="profile-modal-header">
-          <div>
-            <p className="profile-kicker">Полная запись</p>
-            <h2>{entry.title || "Запись о рыбалке"}</h2>
-          </div>
-          <button className="profile-form-ghost-button" onClick={onClose} type="button">
-            Закрыть
-          </button>
-        </div>
-
-        <EntryMediaGallery
-          entry={entry}
-          details
-          alt={entry.title || "Запись о рыбалке"}
-          onOpenFullscreen={(media, initialIndex) =>
-            setFullscreenViewer({
-              media,
-              initialIndex,
-              title: entry.title || "Запись о рыбалке",
-            })
-          }
-        />
-
-        <div className="profile-entry-details-content">
-          <div className="profile-entry-details-main">
-            <span>{formatFishingRange(fishingStart, fishingEnd)}</span>
-            <strong>{entry.locationName || "Место не указано"}</strong>
-          </div>
-
-          {entry.weatherSummary && (
-            <button
-              className="profile-entry-weather-line profile-entry-weather-button"
-              onClick={() => onOpenWeather(entry)}
-              type="button"
-              disabled={!hasWeatherPage}
-            >
-              <span className="profile-entry-weather-icon">☁</span>
-              <span>{entry.weatherSummary}</span>
-            </button>
-          )}
-
-          {entry.description ? (
-            <p className="profile-entry-details-description">{entry.description}</p>
-          ) : (
-            <p className="muted-text">Описание не заполнено.</p>
-          )}
-
-          <div className="profile-entry-meta profile-entry-details-meta">
-            {entry.catchType && <span>Рыба: {entry.catchType}</span>}
-            {entry.catchWeight != null && entry.catchWeight !== "" && <span>Вес: {entry.catchWeight}</span>}
-            {entry.bait && <span>Наживка: {entry.bait}</span>}
-            <span>{entry.visibility === 0 ? "Приватная" : "Публичная"}</span>
-            {entry.isPublishedToFeed && <span>Опубликована в ленте</span>}
-          </div>
-
-          <div className="profile-entry-details-actions">
-            {hasMapPoint && (
-              <button className="profile-form-ghost-button" onClick={() => onOpenMap(entry)} type="button">
-                Посмотреть на карте
-              </button>
-            )}
-            {hasWeatherPage && (
-              <button className="profile-form-ghost-button" onClick={() => onOpenWeather(entry)} type="button">
-                Погода в этот день
-              </button>
-            )}
-            {entry.isPublishedToFeed && (
-              <button className="profile-form-primary-button" onClick={() => onOpenFeed(entry)} type="button">
-                Посмотреть в ленте
-              </button>
-            )}
-          </div>
-        </div>
-      </article>
-
-      {fullscreenViewer && (
-        <MediaLightbox viewer={fullscreenViewer} onClose={() => setFullscreenViewer(null)} />
-      )}
-    </div>
+    <FishingEntryDetailsModal
+      entry={entry}
+      isOpen={isOpen}
+      sourceLabel="Запись профиля"
+      authorLabel={authorLabel}
+      authorAvatarUrl={authorAvatarUrl}
+      authorUserId={authorUserId}
+      onClose={onClose}
+      onOpenWeather={onOpenWeather}
+      onOpenMap={onOpenMap}
+      onOpenFeed={onOpenFeed}
+      onOpenAuthor={onOpenAuthor}
+      onShare={onShare}
+      showAuthor
+      historyKey="profile-entry-details"
+    />
   );
 }
 
@@ -3592,6 +3527,45 @@ export default function ProfilePage() {
     loadShareChats();
   }, [shareModalEntry]);
 
+  useEffect(() => {
+    if (detailsEntry) return;
+    const restoredEntry = getRestoredEntryDetails("profile-entry-details");
+    if (restoredEntry?.id) {
+      setDetailsEntry(restoredEntry);
+    }
+  }, [detailsEntry]);
+
+  useEffect(() => {
+    const hasOpenOverlay = Boolean(shareModalEntry || entryModalOpen || companionModalOpen || friendsModalOpen || isAvatarOpen);
+    if (!hasOpenOverlay || typeof document === "undefined") return undefined;
+
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        if (shareModalEntry) {
+          closeShareModal();
+          return;
+        }
+      }
+    }
+
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    document.body.classList.add("feed-modal-open");
+    document.documentElement.classList.add("feed-modal-open");
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+      document.body.classList.remove("feed-modal-open");
+      document.documentElement.classList.remove("feed-modal-open");
+    };
+  }, [shareModalEntry, entryModalOpen, companionModalOpen, friendsModalOpen, isAvatarOpen]);
+
   const filteredShareChats = useMemo(() => {
     const query = shareChatSearch.trim().toLowerCase();
     if (!query) return availableChats;
@@ -3819,18 +3793,16 @@ export default function ProfilePage() {
           </button>
         </div>
 
-        <div className="profile-actions">
-          <button className="profile-form-primary-button" onClick={openCreateEntryModal} type="button">
-            Добавить запись
+        <div className="profile-actions profile-quick-actions">
+          <button className="profile-form-primary-button profile-action-create" onClick={openCreateEntryModal} type="button">
+            <span className="profile-action-label-full">Добавить запись</span>
+            <span className="profile-action-label-mobile">Запись</span>
           </button>
 
-          <button className="profile-form-ghost-button profile-action-with-badge" onClick={openCompanionModal} type="button">
-            Поиск напарника
-            {companionPendingCount > 0 && <span>{companionPendingCount}</span>}
-          </button>
-
-          <button className="profile-form-ghost-button" onClick={handleShareProfile} type="button">
-            Поделиться профилем
+          <button className="profile-form-ghost-button profile-action-with-badge profile-action-companion" onClick={openCompanionModal} type="button">
+            <span className="profile-action-label-full">Поиск напарника</span>
+            <span className="profile-action-label-mobile">Напарник</span>
+            {companionPendingCount > 0 && <span className="profile-action-badge">{companionPendingCount}</span>}
           </button>
 
           <div className="profile-settings-dropdown" ref={settingsMenuRef}>
@@ -3846,16 +3818,20 @@ export default function ProfilePage() {
 
             {settingsMenuOpen && (
               <div className="profile-settings-menu">
-                <button onClick={openEditProfileFromSettings} type="button">
+                <button className="profile-settings-menu-edit" onClick={openEditProfileFromSettings} type="button">
                   Редактировать профиль
                 </button>
-                <button onClick={openSecurityFromSettings} type="button">
+                <button className="profile-settings-menu-security" onClick={openSecurityFromSettings} type="button">
                   Безопасность
                 </button>
-                <button onClick={openNotificationsFromSettings} type="button">
+                <button className="profile-settings-menu-notifications" onClick={openNotificationsFromSettings} type="button">
                   Уведомления
                 </button>
+                <button className="profile-settings-menu-share" onClick={handleShareProfile} type="button">
+                  Поделиться профилем
+                </button>
                 <button
+                  className="profile-settings-menu-email"
                   onClick={() => {
                     setSettingsMenuOpen(false);
                     showMessage("Смена email будет добавлена следующим этапом.");
@@ -3864,7 +3840,7 @@ export default function ProfilePage() {
                 >
                   Сменить email
                 </button>
-                <button onClick={handleLogout} type="button" className="danger">
+                <button onClick={handleLogout} type="button" className="danger profile-settings-menu-logout">
                   Выйти
                 </button>
               </div>
@@ -4056,6 +4032,11 @@ export default function ProfilePage() {
         onOpenWeather={handleOpenWeather}
         onOpenMap={handleOpenEntryMap}
         onOpenFeed={handleOpenEntryInFeed}
+        authorLabel={getDisplayName(profile)}
+        authorAvatarUrl={profile.avatarUrl}
+        authorUserId={profile.id || profile.userId}
+        onOpenAuthor={() => navigate("/profile")}
+        onShare={openShareEntryModal}
       />
 
       <CompanionRequestsModal
@@ -4086,19 +4067,26 @@ export default function ProfilePage() {
       />
 
       {shareModalEntry && (
-        <div className="profile-share-modal-backdrop" onClick={closeShareModal}>
-          <div className="profile-share-modal" onClick={(event) => event.stopPropagation()}>
-            <div className="profile-share-modal__header">
+        <div className="feed-share-modal-backdrop profile-feed-share-modal-backdrop" onClick={closeShareModal}>
+          <div className="feed-share-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="feed-share-modal-header">
               <div>
-                <p className="profile-kicker">Поделиться</p>
-                <h2>Отправить запись в чат</h2>
-                <span>{shareModalEntry.title || "Запись о рыбалке"}</span>
+                <h3>Поделиться в чат</h3>
+                <p>{getEntryShareTitle(shareModalEntry)}</p>
               </div>
-              <button type="button" onClick={closeShareModal} aria-label="Закрыть">×</button>
+
+              <button
+                type="button"
+                className="feed-share-close"
+                onClick={closeShareModal}
+                aria-label="Закрыть"
+              >
+                <span className="feed-share-close-icon" aria-hidden="true">×</span>
+              </button>
             </div>
 
             <textarea
-              className="profile-share-modal__message"
+              className="feed-share-message"
               value={shareMessageText}
               onChange={(event) => setShareMessageText(event.target.value)}
               maxLength={1000}
@@ -4106,17 +4094,17 @@ export default function ProfilePage() {
             />
 
             <input
-              className="profile-share-modal__search"
+              className="feed-input feed-share-search"
               value={shareChatSearch}
               onChange={(event) => setShareChatSearch(event.target.value)}
               placeholder="Найти чат"
             />
 
-            <div className="profile-share-modal__list">
+            <div className="feed-share-chat-list">
               {loadingShareChats ? (
-                <div className="profile-share-modal__empty">Загружаем чаты...</div>
+                <div className="feed-empty-comments">Загружаем чаты...</div>
               ) : filteredShareChats.length === 0 ? (
-                <div className="profile-share-modal__empty">Чаты не найдены.</div>
+                <div className="feed-empty-comments">Чаты не найдены.</div>
               ) : (
                 filteredShareChats.map((chat) => {
                   const isSelected = selectedShareChatIds.includes(chat.id);
@@ -4126,33 +4114,40 @@ export default function ProfilePage() {
                     <button
                       key={chat.id}
                       type="button"
-                      className={`profile-share-chat${isSelected ? " selected" : ""}`}
+                      className={`feed-share-chat ${isSelected ? "selected" : ""}`}
                       disabled={shareSending}
                       onClick={() => toggleShareChat(chat.id)}
                     >
-                      <span className="profile-share-chat__avatar">
+                      <div className="feed-share-chat-avatar">
                         {safeAvatarUrl ? (
                           <img src={safeAvatarUrl} alt={chat.name || "Чат"} loading="lazy" decoding="async" />
                         ) : (
                           <span>{getInitials(chat.name || "Ч")}</span>
                         )}
-                      </span>
-                      <span className="profile-share-chat__info">
+                      </div>
+
+                      <div className="feed-share-chat-info">
                         <strong>{chat.name || "Чат"}</strong>
-                        <small>{chat.type === "Group" ? "Групповой чат" : "Личный чат"}</small>
+                        <span>{chat.type === "Group" ? "Групповой чат" : chat.type === "Private" ? "Личный чат" : "Чат"}</span>
+                      </div>
+
+                      <span className="feed-share-check" aria-hidden="true">
+                        <span className="feed-share-check-icon">{isSelected ? "✓" : ""}</span>
                       </span>
-                      <span className="profile-share-chat__check" aria-hidden="true">{isSelected ? "✓" : ""}</span>
                     </button>
                   );
                 })
               )}
             </div>
 
-            <div className="profile-share-modal__footer">
-              <span>Выбрано: {selectedShareChatIds.length}</span>
+            <div className="feed-share-footer">
+              <div className="feed-share-selected-count">
+                Выбрано: {selectedShareChatIds.length}
+              </div>
+
               <button
                 type="button"
-                className="profile-form-primary-button"
+                className="feed-action-button primary feed-share-send-button"
                 disabled={selectedShareChatIds.length === 0 || shareSending}
                 onClick={handleSendShareToChats}
               >

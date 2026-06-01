@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import MediaLightbox from "../MediaLightbox";
+import FishingEntryDetailsModal from "../FishingEntryDetailsModal";
 import {
   formatFileSize,
   formatMessageTime,
@@ -32,6 +33,15 @@ function getSharedCatchLabel(entry) {
   if (entry?.catchType) parts.push(entry.catchType);
   if (entry?.catchWeight != null) parts.push(`${entry.catchWeight} кг`);
   return parts.length > 0 ? parts.join(" · ") : "Улов не указан";
+}
+
+function isSharedEntryPrivate(entry) {
+  const visibility = String(entry?.visibility ?? "").toLowerCase();
+  return entry?.visibility === 0 || visibility === "0" || visibility.includes("private");
+}
+
+function canOpenSharedEntryInFeed(entry) {
+  return Boolean(entry?.id && entry?.isPublishedToFeed && !isSharedEntryPrivate(entry));
 }
 
 
@@ -129,231 +139,29 @@ function CollapsibleMessageText({ messageId, text, isExpanded, onToggle }) {
   );
 }
 
-function normalizeSharedEntryMedia(entry) {
-  const media = Array.isArray(entry?.media) ? entry.media : [];
-  const normalized = media
-    .map((item, index) => ({
-      id: item.id || item.url || `shared-media-${index}`,
-      url: item.url || item.fileUrl || item.photoUrl,
-      mediaType: String(item.mediaType || item.type || "image").toLowerCase().startsWith("video") ? "video" : "image",
-      sortOrder: Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : index,
-    }))
-    .filter((item) => item.url)
-    .sort((a, b) => a.sortOrder - b.sortOrder);
 
-  if (normalized.length === 0 && entry?.photoUrl) {
-    normalized.push({
-      id: `shared-photo-${entry.photoUrl}`,
-      url: entry.photoUrl,
-      mediaType: "image",
-      sortOrder: 0,
-    });
-  }
-
-  return normalized;
+function getRestoredEntryDetails(historyKey) {
+  if (typeof window === "undefined") return null;
+  const state = window.history.state || {};
+  if (state.fishingEntryDetailsHistoryKey !== historyKey) return null;
+  return state.fishingEntryDetailsEntry || null;
 }
 
-function SharedFishingEntryDetailsModal({ entry, onClose, onOpenMedia }) {
-  if (!entry) return null;
-
-  const media = normalizeSharedEntryMedia(entry);
-  const date = entry.fishingStartedAt || entry.fishingDate;
-
+function SharedFishingEntryDetailsModal({ entry, onClose, onOpenFeed, onOpenAuthor }) {
   return (
-    <div className="chat-shared-entry-backdrop" onClick={onClose}>
-      <article className="chat-shared-entry-modal" onClick={(event) => event.stopPropagation()}>
-        <header className="chat-shared-entry-header">
-          <div>
-            <p>Запись из чата</p>
-            <h2>{entry.title || "Рыбалка без названия"}</h2>
-          </div>
-          <button type="button" onClick={onClose} aria-label="Закрыть">×</button>
-        </header>
-
-        {media.length > 0 && (
-          <div className="chat-shared-entry-media-grid">
-            {media.slice(0, 4).map((item, index) => {
-              const safeUrl = getSafeAppFileUrl(item.url);
-              const isVideo = item.mediaType === "video";
-
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  className="chat-shared-entry-media"
-                  onClick={() => onOpenMedia(media, index)}
-                >
-                  {safeUrl && isVideo ? (
-                    <video src={safeUrl} preload="metadata" muted playsInline />
-                  ) : (
-                    safeUrl && <img src={safeUrl} alt="Медиа записи" loading="lazy" decoding="async" />
-                  )}
-                  {index === 3 && media.length > 4 && (
-                    <span>+{media.length - 4}</span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        <div className="chat-shared-entry-info-grid">
-          <div>
-            <span>Автор</span>
-            <strong>{entry.userName || "Рыбак"}</strong>
-          </div>
-          <div>
-            <span>Дата</span>
-            <strong>{formatFishingEntryDate(date)}</strong>
-          </div>
-          <div>
-            <span>Место</span>
-            <strong>{entry.locationName || "Не указано"}</strong>
-          </div>
-          <div>
-            <span>Улов</span>
-            <strong>{getSharedCatchLabel(entry)}</strong>
-          </div>
-        </div>
-
-        {entry.weatherSummary && (
-          <p className="chat-shared-entry-chip">☁ {entry.weatherSummary}</p>
-        )}
-
-        {entry.description && (
-          <p className="chat-shared-entry-description">{entry.description}</p>
-        )}
-
-        <div className="chat-shared-entry-meta">
-          {entry.bait && <span>Наживка: {entry.bait}</span>}
-          {entry.visibility === 0 || entry.visibility === "Private" ? <span>Приватная запись</span> : null}
-        </div>
-      </article>
-    </div>
+    <FishingEntryDetailsModal
+      entry={entry}
+      isOpen={Boolean(entry)}
+      sourceLabel="Запись из чата"
+      onClose={onClose}
+      onOpenFeed={onOpenFeed}
+      onOpenAuthor={onOpenAuthor}
+      showShareAction={false}
+      historyKey="chat-shared-entry-details"
+    />
   );
 }
 
-
-function ChatFullscreenMediaViewer({ viewer, onClose }) {
-  const [activeIndex, setActiveIndex] = useState(viewer?.initialIndex || 0);
-  const touchStartRef = useRef(null);
-
-  useEffect(() => {
-    if (!viewer) return undefined;
-
-    function handleKeyDown(event) {
-      if (event.key === "Escape") {
-        onClose();
-        return;
-      }
-
-      if (event.key === "ArrowLeft") {
-        setActiveIndex((current) => Math.max(0, current - 1));
-      }
-
-      if (event.key === "ArrowRight") {
-        setActiveIndex((current) => Math.min((viewer.media?.length || 1) - 1, current + 1));
-      }
-    }
-
-    window.addEventListener("keydown", handleKeyDown);
-    document.body.classList.add("chat-fullscreen-open");
-    document.documentElement.classList.add("chat-fullscreen-open");
-
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      document.body.classList.remove("chat-fullscreen-open");
-      document.documentElement.classList.remove("chat-fullscreen-open");
-    };
-  }, [onClose, viewer]);
-
-  if (!viewer?.media?.length) return null;
-
-  const media = viewer.media;
-  const active = media[Math.min(activeIndex, media.length - 1)] || media[0];
-  const safeUrl = active?.safeUrl;
-  const isVideo = active?.mediaType === "video";
-
-  function goPrevious(event) {
-    event?.stopPropagation();
-    setActiveIndex((current) => (current - 1 + media.length) % media.length);
-  }
-
-  function goNext(event) {
-    event?.stopPropagation();
-    setActiveIndex((current) => (current + 1) % media.length);
-  }
-
-  function handleTouchStart(event) {
-    const touch = event.touches?.[0];
-    if (!touch) return;
-
-    touchStartRef.current = {
-      x: touch.clientX,
-      y: touch.clientY,
-    };
-  }
-
-  function handleTouchEnd(event) {
-    const touch = event.changedTouches?.[0];
-    const start = touchStartRef.current;
-
-    touchStartRef.current = null;
-
-    if (!touch || !start || media.length <= 1) return;
-
-    const dx = touch.clientX - start.x;
-    const dy = touch.clientY - start.y;
-
-    if (Math.abs(dx) < 44 || Math.abs(dx) < Math.abs(dy)) return;
-
-    if (dx < 0) {
-      goNext(event);
-    } else {
-      goPrevious(event);
-    }
-  }
-
-  return (
-    <div className="chat-fullscreen-backdrop" onClick={onClose}>
-      <div className="chat-fullscreen-viewer" onClick={(event) => event.stopPropagation()}>
-        <div className="chat-fullscreen-topbar">
-          <div>
-            <strong>Медиа</strong>
-            <span>{media.length > 1 ? `${activeIndex + 1} / ${media.length}` : ""}</span>
-          </div>
-
-          <button type="button" onClick={onClose} aria-label="Закрыть">
-            ×
-          </button>
-        </div>
-
-        <div
-          className="chat-fullscreen-media-wrap"
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
-        >
-          {safeUrl && isVideo ? (
-            <video className="chat-fullscreen-media" src={safeUrl} controls playsInline preload="metadata" />
-          ) : (
-            safeUrl && <img className="chat-fullscreen-media" src={safeUrl} alt="Медиа из чата" />
-          )}
-
-          {media.length > 1 && (
-            <>
-              <button type="button" className="chat-fullscreen-nav prev" onClick={goPrevious} aria-label="Предыдущее медиа">
-                ‹
-              </button>
-              <button type="button" className="chat-fullscreen-nav next" onClick={goNext} aria-label="Следующее медиа">
-                ›
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 const FEED_PAGE_ROUTE_FALLBACK = "/feed";
 
@@ -630,6 +438,20 @@ export default function ChatMessagesList({
   const handledScrollRequestKeyRef = useRef(null);
   const readBoundaryTimerRef = useRef(null);
   const lastReportedReadBoundaryIdRef = useRef(null);
+
+  useEffect(() => {
+    if (sharedEntryViewer) return;
+    const restoredEntry = getRestoredEntryDetails("chat-shared-entry-details");
+    if (restoredEntry?.id) {
+      setSharedEntryViewer(restoredEntry);
+    }
+  }, [sharedEntryViewer]);
+
+  function openSharedEntryAuthor(_entry, authorId) {
+    const targetUserId = authorId || _entry?.userId || _entry?.authorId || _entry?.createdByUserId;
+    if (!targetUserId || typeof goToUserProfile !== "function") return;
+    goToUserProfile(targetUserId);
+  }
 
   function findLastVisibleMessage() {
     const container = scrollContainerRef.current;
@@ -990,25 +812,14 @@ export default function ChatMessagesList({
   function openSharedFishingEntry(entry) {
     if (entry) {
       setSharedEntryViewer(entry);
-      return;
     }
-
-    if (!entry?.id) return;
-
-    const feedRoute = getFeedPageRoute();
-    navigate(`${feedRoute}?entry.id=${entry.id}`);
   }
 
-  function openSharedEntryMedia(media, initialIndex) {
-    setMediaViewer({
-      title: "Медиа записи",
-      media: media.map((item) => ({
-        id: item.id,
-        safeUrl: getSafeAppFileUrl(item.url),
-        mediaType: item.mediaType,
-      })),
-      initialIndex,
-    });
+  function openSharedFishingEntryInFeed(entry) {
+    if (!canOpenSharedEntryInFeed(entry)) return;
+
+    const feedRoute = getFeedPageRoute();
+    navigate(`${feedRoute}?entryId=${encodeURIComponent(entry.id)}`);
   }
 
   function openMessageMediaViewer(event, media, initialIndex) {
@@ -1269,6 +1080,54 @@ export default function ChatMessagesList({
           padding: 6px 10px;
           border-radius: 999px;
           background: rgba(255, 255, 255, 0.055);
+        }
+
+        .chat-shared-entry-actions {
+          display: flex;
+          justify-content: flex-end;
+          margin-top: 14px;
+        }
+
+        .chat-shared-entry-actions button {
+          min-height: 42px;
+          padding: 0 18px;
+          border: 1px solid rgba(134, 239, 172, 0.42);
+          border-radius: 999px;
+          color: #052e16;
+          background: linear-gradient(135deg, #86efac, #5eead4);
+          font-size: 13px;
+          font-weight: 1000;
+          cursor: pointer;
+          box-shadow: 0 16px 34px rgba(34, 197, 94, 0.18);
+        }
+
+        @media (max-width: 640px) {
+          .chat-shared-entry-backdrop {
+            align-items: start;
+            padding: 8px;
+          }
+
+          .chat-shared-entry-modal {
+            max-height: calc(100dvh - 16px);
+            padding: 14px;
+            border-radius: 22px;
+          }
+
+          .chat-shared-entry-media-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .chat-shared-entry-media {
+            min-height: 240px;
+          }
+
+          .chat-shared-entry-info-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .chat-shared-entry-actions {
+            display: grid;
+          }
         }
 
         .chat-messages-shell {
@@ -2042,7 +1901,7 @@ export default function ChatMessagesList({
                             {safeSharedFishingPhotoUrl && (
                               <img
                                 src={safeSharedFishingPhotoUrl}
-                                alt={msg.sharedFishingEntry.title || "Запись из ленты"}
+                                alt={msg.sharedFishingEntry.title || "Запись из чата"}
                                 style={{
                                   display: "block",
                                   width: "100%",
@@ -2065,7 +1924,7 @@ export default function ChatMessagesList({
                                   fontWeight: 800,
                                 }}
                               >
-                                🎣 Запись из ленты
+                                {canOpenSharedEntryInFeed(msg.sharedFishingEntry) ? "🎣 Запись из ленты" : "🎣 Запись из чата"}
                               </div>
 
                               <div style={{ fontWeight: 900, fontSize: "15px", marginBottom: "5px" }}>
@@ -2080,7 +1939,7 @@ export default function ChatMessagesList({
                               </div>
 
                               <div style={{ marginTop: "10px", fontSize: "13px", fontWeight: 800, color: "#bfdbfe" }}>
-                                Открыть подробности →
+                                Открыть запись →
                               </div>
                             </div>
                           </button>
@@ -2184,7 +2043,8 @@ export default function ChatMessagesList({
         <SharedFishingEntryDetailsModal
           entry={sharedEntryViewer}
           onClose={() => setSharedEntryViewer(null)}
-          onOpenMedia={openSharedEntryMedia}
+          onOpenFeed={openSharedFishingEntryInFeed}
+          onOpenAuthor={openSharedEntryAuthor}
         />
       )}
 

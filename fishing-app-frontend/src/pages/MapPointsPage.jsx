@@ -340,11 +340,6 @@ export default function MapPointsPage() {
   const mapSectionRef = useRef(null);
   const listSectionRef = useRef(null);
 
-  const visiblePoints = useMemo(
-    () => points.filter((point) => point.isVisibleOnMap !== false),
-    [points]
-  );
-
   const filteredPoints = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
@@ -876,27 +871,6 @@ export default function MapPointsPage() {
 
   return (
     <div className="map-points-page">
-      <header className="map-points-header">
-        <div>
-          <p className="map-points-kicker">Мои места</p>
-          <h1>Карта рыболова</h1>
-          <p>
-            Сохраняй перспективные места, пирсы, магазины и зоны риска. Фильтры управляют и списком, и маркерами на карте.
-          </p>
-        </div>
-
-        <div className="map-points-header-stats">
-          <div>
-            <strong>{points.length}</strong>
-            <span>всего точек</span>
-          </div>
-          <div>
-            <strong>{visiblePoints.length}</strong>
-            <span>на карте</span>
-          </div>
-        </div>
-      </header>
-
       {message && (
         <div className={`map-points-message ${isErrorMessage ? "error" : "success"}`}>
           {message}

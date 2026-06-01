@@ -2141,3 +2141,42 @@
     padding: 0;
   }
 }
+
+/* ===== Map v14: header title lives in the app header ===== */
+.map-points-header {
+  display: none;
+}
+
+.map-points-page {
+  padding-top: 14px;
+}
+
+@media (max-width: 760px) {
+  main.page-container:has(> .map-points-page) {
+    width: 100%;
+    max-width: none;
+    padding: 0;
+  }
+
+  .map-points-page {
+    padding: 8px 0 max(108px, env(safe-area-inset-bottom));
+  }
+
+  .map-points-map-card,
+  .map-points-list-section,
+  .map-points-message {
+    width: 100%;
+    max-width: none;
+    margin-left: 0;
+    margin-right: 0;
+    border-left: 0;
+    border-right: 0;
+    border-radius: 0;
+  }
+
+  .map-points-map-card,
+  .map-points-list-section {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+}

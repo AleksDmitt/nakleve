@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import MediaLightbox from "../components/MediaLightbox";
+import FishingEntryDetailsModal from "../components/FishingEntryDetailsModal";
 import {
   adminDeleteFishingEntry,
   createFishingEntryComment,
@@ -48,6 +49,13 @@ const COMMENTS_ROOT_LIMIT = 10;
 const DESCRIPTION_PREVIEW_LIMIT = 210;
 const FEED_PAGE_SIZE = 10;
 
+function getRestoredEntryDetails(historyKey) {
+  if (typeof window === "undefined") return null;
+  const state = window.history.state || {};
+  if (state.fishingEntryDetailsHistoryKey !== historyKey) return null;
+  return state.fishingEntryDetailsEntry || null;
+}
+
 function formatDateTime(value) {
   if (!value) return "—";
 
@@ -61,6 +69,68 @@ function formatDateTime(value) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function isSameDay(firstValue, secondValue) {
+  const first = new Date(firstValue);
+  const second = new Date(secondValue);
+
+  if (Number.isNaN(first.getTime()) || Number.isNaN(second.getTime())) return false;
+
+  return (
+    first.getFullYear() === second.getFullYear() &&
+    first.getMonth() === second.getMonth() &&
+    first.getDate() === second.getDate()
+  );
+}
+
+function formatShortDate(value) {
+  if (!value) return "—";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+
+  return date.toLocaleDateString("ru-RU", {
+    day: "numeric",
+    month: "short",
+  });
+}
+
+function formatShortTime(value) {
+  if (!value) return "—";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+
+  return date.toLocaleTimeString("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatFishingRange(startValue, endValue) {
+  if (!startValue && !endValue) return "Время не указано";
+
+  if (startValue && !endValue) {
+    return `${formatShortDate(startValue)}, ${formatShortTime(startValue)}`;
+  }
+
+  if (!startValue && endValue) {
+    return `${formatShortDate(endValue)}, до ${formatShortTime(endValue)}`;
+  }
+
+  if (isSameDay(startValue, endValue)) {
+    return `${formatShortDate(startValue)}, ${formatShortTime(startValue)}–${formatShortTime(endValue)}`;
+  }
+
+  return `${formatShortDate(startValue)} ${formatShortTime(startValue)} — ${formatShortDate(endValue)} ${formatShortTime(endValue)}`;
+}
+
+function getEntryFishingRange(entry) {
+  return formatFishingRange(
+    entry?.fishingStartedAt || entry?.startTime || entry?.fishingDate,
+    entry?.fishingEndedAt || entry?.endTime
+  );
 }
 
 function getDateForUrl(value) {
@@ -168,6 +238,18 @@ function getCommentTree(comments) {
 
 function getEntryShareTitle(entry) {
   return `${entry.title || "Запись о рыбалке"}${entry.locationName ? ` · ${entry.locationName}` : ""}`;
+}
+
+
+function RepostIcon() {
+  return (
+    <svg className="feed-repost-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M7 7h9.2c2.1 0 3.8 1.7 3.8 3.8v.2" />
+      <path d="M16.4 3.8 20 7.4 16.4 11" />
+      <path d="M17 17H7.8C5.7 17 4 15.3 4 13.2V13" />
+      <path d="M7.6 20.2 4 16.6 7.6 13" />
+    </svg>
+  );
 }
 
 function getDescriptionPreview(description) {
@@ -708,6 +790,14 @@ export default function FeedPage() {
   }, [loading, searchParams, entries]);
 
   useEffect(() => {
+    if (detailEntry) return;
+    const restoredEntry = getRestoredEntryDetails("feed-entry-details");
+    if (restoredEntry?.id) {
+      setDetailEntry(restoredEntry);
+    }
+  }, [detailEntry]);
+
+  useEffect(() => {
     if (!shareModalEntry) return;
 
     async function loadShareChats() {
@@ -728,15 +818,14 @@ export default function FeedPage() {
   }, [shareModalEntry]);
 
   useEffect(() => {
-    if (!shareModalEntry && !detailEntry) return undefined;
+    if (!shareModalEntry) return undefined;
 
     const handleKeyDown = (event) => {
-      if (event.key === "Escape") {
-        setShareModalEntry(null);
-        setShareMessageText("");
-        setSelectedShareChatIds([]);
-        setDetailEntry(null);
-      }
+      if (event.key !== "Escape") return;
+
+      setShareModalEntry(null);
+      setShareMessageText("");
+      setSelectedShareChatIds([]);
     };
 
     const previousBodyOverflow = document.body.style.overflow;
@@ -755,7 +844,7 @@ export default function FeedPage() {
       document.body.classList.remove("feed-modal-open");
       document.documentElement.classList.remove("feed-modal-open");
     };
-  }, [shareModalEntry, detailEntry]);
+  }, [shareModalEntry]);
 
   useEffect(() => {
     if (!toastMessage) return undefined;
@@ -1056,7 +1145,6 @@ export default function FeedPage() {
       return;
     }
 
-    setDetailEntry(null);
     setShareModalEntry(entry);
     setShareChatSearch("");
     setShareMessageText("");
@@ -1449,24 +1537,8 @@ export default function FeedPage() {
                     </div>
                   </div>
 
-                  <div className="feed-header-actions">
-                    <button
-                      type="button"
-                      className="feed-mini-button"
-                      onClick={() => openProfile(entry.userId)}
-                    >
-                      Профиль
-                    </button>
-
-                    <button
-                      type="button"
-                      className="feed-mini-button"
-                      onClick={() => shareEntry(entry)}
-                    >
-                      Поделиться · {sharesCount}
-                    </button>
-
-                    {isAdmin && (
+                  {isAdmin && (
+                    <div className="feed-header-actions">
                       <button
                         type="button"
                         className="feed-mini-button feed-admin-button"
@@ -1476,8 +1548,8 @@ export default function FeedPage() {
                       >
                         Удалить
                       </button>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </header>
 
                 <FeedMediaGallery entry={entry} onOpenDetails={setDetailEntry} />
@@ -1506,7 +1578,7 @@ export default function FeedPage() {
                   )}
 
                   <div className="feed-meta-strip">
-                    <span title="Дата рыбалки">📅 {formatDateTime(entry.fishingStartedAt || entry.fishingDate)}</span>
+                    <span title="Время рыбалки">📅 {getEntryFishingRange(entry)}</span>
                     <button
                       type="button"
                       className="feed-meta-action"
@@ -1532,44 +1604,37 @@ export default function FeedPage() {
                   </div>
                 </div>
 
-                <footer className="feed-actions">
+                <footer className="feed-actions feed-actions-compact">
                   <div className="feed-social-actions">
                     <button
                       type="button"
-                      className={`feed-action-button ${isLiked ? "liked" : ""}`}
+                      className={`feed-action-button feed-social-button ${isLiked ? "liked" : ""}`}
                       disabled={Boolean(actionLoading[`like-${entry.id}`])}
                       onClick={() => handleToggleLike(entry)}
+                      aria-label={isLiked ? "Убрать лайк" : "Поставить лайк"}
                     >
-                      {isLiked ? "❤️" : "🤍"} {likesCount}
+                      <span className="feed-social-icon" aria-hidden="true">{isLiked ? "❤️" : "🤍"}</span>
+                      <span>{likesCount}</span>
                     </button>
 
                     <button
                       type="button"
-                      className="feed-action-button"
+                      className="feed-action-button feed-social-button"
                       onClick={() => toggleExpanded(entry.id)}
+                      aria-label="Комментарии"
                     >
-                      💬 {commentsCount}
-                    </button>
-
-                  </div>
-
-                  <div className="feed-navigation-actions">
-                    <button
-                      type="button"
-                      className="feed-action-button primary"
-                      disabled={!hasCoordinates(entry)}
-                      onClick={() => openMap(entry)}
-                    >
-                      Карта
+                      <span className="feed-social-icon" aria-hidden="true">💬</span>
+                      <span>{commentsCount}</span>
                     </button>
 
                     <button
                       type="button"
-                      className="feed-action-button"
-                      disabled={!hasCoordinates(entry)}
-                      onClick={() => openWeather(entry)}
+                      className="feed-action-button feed-social-button feed-share-button"
+                      onClick={() => shareEntry(entry)}
+                      aria-label="Поделиться записью"
                     >
-                      Прогноз
+                      <span className="feed-social-icon feed-repost-social-icon" aria-hidden="true"><RepostIcon /></span>
+                      <span>{sharesCount}</span>
                     </button>
                   </div>
                 </footer>
@@ -1810,107 +1875,18 @@ export default function FeedPage() {
       )}
 
       {detailEntry && (
-        <div className="feed-detail-modal-backdrop" onClick={() => setDetailEntry(null)}>
-          <article className="feed-detail-modal" onClick={(event) => event.stopPropagation()}>
-            <header className="feed-detail-header">
-              <div>
-                <p className="feed-detail-kicker">Полная запись</p>
-                <h2>{detailEntry.title || "Рыбалка без названия"}</h2>
-              </div>
-
-              <button
-                type="button"
-                className="feed-share-close"
-                onClick={() => setDetailEntry(null)}
-              >
-                <span className="feed-share-close-icon" aria-hidden="true">×</span>
-              </button>
-            </header>
-
-            <FeedMediaGallery
-              entry={detailEntry}
-              details
-              onOpenFullscreen={(media, initialIndex) =>
-                setFullscreenViewer({
-                  media,
-                  initialIndex,
-                  title: detailEntry.title || "Запись о рыбалке",
-                })
-              }
-            />
-
-            <div className="feed-detail-author">
-              {getSafeImageUrl(detailEntry.avatarUrl) ? (
-                <img src={getSafeImageUrl(detailEntry.avatarUrl)} alt={detailEntry.userName || "Автор"} loading="lazy" decoding="async" />
-              ) : (
-                <span>{getInitials(detailEntry.userName)}</span>
-              )}
-              <div>
-                <strong>{detailEntry.userName || "Рыбак"}</strong>
-                <small>Опубликовано {formatDateTime(detailEntry.createdAt)}</small>
-              </div>
-            </div>
-
-            <div className="feed-detail-meta">
-              <span>📅 {formatDateTime(detailEntry.fishingStartedAt || detailEntry.fishingDate)}</span>
-              <button
-                type="button"
-                className="feed-meta-action"
-                disabled={!hasCoordinates(detailEntry)}
-                onClick={() => openMap(detailEntry)}
-              >
-                📍 {detailEntry.locationName || "Место не указано"}
-              </button>
-              <span>🐟 {getCatchLabel(detailEntry)}</span>
-              {detailEntry.bait && <span>🪱 {detailEntry.bait}</span>}
-              {detailEntry.weatherSummary && (
-                <button
-                  type="button"
-                  className="feed-meta-action"
-                  disabled={!hasCoordinates(detailEntry)}
-                  onClick={() => openWeather(detailEntry)}
-                >
-                  🌤 {detailEntry.weatherSummary}
-                </button>
-              )}
-              {hasCoordinates(detailEntry) && <span>🧭 {detailEntry.latitude}, {detailEntry.longitude}</span>}
-            </div>
-
-            {detailEntry.description ? (
-              <p className="feed-detail-description">{detailEntry.description}</p>
-            ) : (
-              <p className="feed-detail-description muted">Описание не указано.</p>
-            )}
-
-            <footer className="feed-detail-actions">
-              <button
-                type="button"
-                className="feed-action-button primary"
-                disabled={!hasCoordinates(detailEntry)}
-                onClick={() => openMap(detailEntry)}
-              >
-                Карта
-              </button>
-
-              <button
-                type="button"
-                className="feed-action-button"
-                disabled={!hasCoordinates(detailEntry)}
-                onClick={() => openWeather(detailEntry)}
-              >
-                Прогноз
-              </button>
-
-              <button
-                type="button"
-                className="feed-action-button"
-                onClick={() => shareEntry(detailEntry)}
-              >
-                Поделиться
-              </button>
-            </footer>
-          </article>
-        </div>
+        <FishingEntryDetailsModal
+          entry={detailEntry}
+          isOpen={Boolean(detailEntry)}
+          sourceLabel="Запись в ленте"
+          onClose={() => setDetailEntry(null)}
+          onOpenMap={openMap}
+          onOpenWeather={openWeather}
+          onOpenAuthor={(modalEntry) => openProfile(modalEntry?.userId || modalEntry?.authorId || modalEntry?.createdByUserId)}
+          onShare={shareEntry}
+          showFeedAction={false}
+          historyKey="feed-entry-details"
+        />
       )}
 
       {fullscreenViewer && (

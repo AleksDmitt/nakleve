@@ -367,6 +367,13 @@ export default function ChatDetailsPage() {
     backGuardInstalledRef.current = true;
 
     function handleBackFromChatDetails() {
+      // Если поверх чата открыта полная запись, popstate нужен ей самой:
+      // браузерная кнопка назад/кнопка назад мыши/назад на телефоне должны закрыть
+      // запись и оставить пользователя в текущем чате, а не выбрасывать в список чатов.
+      if (window.__nakleveEntryDetailsModalOpen) {
+        return;
+      }
+
       backGuardInstalledRef.current = false;
       closeInProgressRef.current = true;
       navigateBackToChat();
@@ -383,6 +390,7 @@ export default function ChatDetailsPage() {
   useEffect(() => {
     function handleEscapeClose(event) {
       if (event.key !== "Escape") return;
+      if (window.__nakleveEntryDetailsModalOpen) return;
       closeChatInfoPage();
     }
 

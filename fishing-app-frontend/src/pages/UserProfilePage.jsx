@@ -1,15 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { getPublicProfile, adminBlockUser, adminUnblockUser, reportUser, blockUser, unblockUser } from "../api/profileApi";
-import { createOrGetPersonalChat, getUserPresence } from "../api/chatsApi";
-import { adminDeleteFishingEntry } from "../api/fishingEntriesApi";
+import { createOrGetPersonalChat, getChats, getUserPresence, shareFishingEntryToChat } from "../api/chatsApi";
+import { adminDeleteFishingEntry, shareFishingEntry } from "../api/fishingEntriesApi";
 import { useAuth } from "../context/AuthContext";
+import MediaLightbox from "../components/MediaLightbox";
+import FishingEntryDetailsModal from "../components/FishingEntryDetailsModal";
 import {
   sendFriendRequest,
   cancelOutgoingFriendRequest,
   removeFriend,
   getFriendshipStatus,
 } from "../api/friendsApi";
+import "../styles/FeedPage.css";
 import "../styles/profile.css";
 import { getSafeAppFileUrl, getSafeImageUrl } from "../utils/safeUrl.js";
 
@@ -65,7 +68,7 @@ function formatPresence(presence) {
   if (!rawLastSeen) {
     return {
       title: "Не в сети",
-      text: "нет данных о последнем посещении",
+      text: "нет данных",
       isOnline: false,
     };
   }
@@ -145,6 +148,18 @@ function getDisplayName(user) {
   const fullName = `${user.firstName || ""} ${user.lastName || ""}`.trim();
 
   return user.displayName || fullName || user.userName || "Пользователь";
+}
+
+
+function getRestoredEntryDetails(historyKey) {
+  if (typeof window === "undefined") return null;
+  const state = window.history.state || {};
+  if (state.fishingEntryDetailsHistoryKey !== historyKey) return null;
+  return state.fishingEntryDetailsEntry || null;
+}
+
+function getEntryShareTitle(entry) {
+  return `${entry?.title || "Запись о рыбалке"}${entry?.locationName ? ` · ${entry.locationName}` : ""}`;
 }
 
 function isSameDay(first, second) {
@@ -254,9 +269,11 @@ function normalizeEntryMedia(entry) {
   return normalized;
 }
 
-function EntryMediaGallery({ entry, details = false, alt = "Медиа записи" }) {
+function EntryMediaGallery({ entry, details = false, alt = "Медиа записи", onOpenFullscreen }) {
   const media = normalizeEntryMedia(entry);
   const [activeIndex, setActiveIndex] = useState(0);
+  const touchStartRef = useRef(null);
+  const didSwipeRef = useRef(false);
 
   useEffect(() => {
     setActiveIndex(0);
@@ -271,24 +288,88 @@ function EntryMediaGallery({ entry, details = false, alt = "Медиа запи�
   }
 
   const active = media[Math.min(activeIndex, media.length - 1)] || media[0];
+  const safeActiveUrl = getSafeAppFileUrl(active?.url);
+  if (!safeActiveUrl) return null;
+
   const isVideo = active.mediaType === "video";
 
   function goPrevious(event) {
-    event?.stopPropagation();
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
     setActiveIndex((current) => (current - 1 + media.length) % media.length);
   }
 
   function goNext(event) {
-    event?.stopPropagation();
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
     setActiveIndex((current) => (current + 1) % media.length);
   }
 
+  function handleTouchStart(event) {
+    const touch = event.touches?.[0];
+    if (!touch) return;
+
+    didSwipeRef.current = false;
+    touchStartRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+    };
+  }
+
+  function handleTouchEnd(event) {
+    const touch = event.changedTouches?.[0];
+    const start = touchStartRef.current;
+
+    touchStartRef.current = null;
+
+    if (!touch || !start || media.length <= 1) return;
+
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+
+    if (Math.abs(dx) < 44 || Math.abs(dx) < Math.abs(dy)) return;
+
+    didSwipeRef.current = true;
+
+    if (dx < 0) {
+      goNext(event);
+    } else {
+      goPrevious(event);
+    }
+  }
+
+  function handleGalleryClick(event) {
+    if (didSwipeRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      didSwipeRef.current = false;
+      return;
+    }
+
+    if (details) {
+      openFullscreen(event);
+    }
+  }
+
+  function openFullscreen(event) {
+    event?.stopPropagation();
+    onOpenFullscreen?.(media, Math.min(activeIndex, media.length - 1));
+  }
+
   return (
-    <div className={`profile-entry-media-frame ${details ? "profile-entry-details-image" : ""}`}>
+    <div
+      className={`profile-entry-media-frame profile-gallery-touchable ${details ? "profile-entry-details-image" : ""}`}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+      onClick={handleGalleryClick}
+      role={details ? "button" : undefined}
+      tabIndex={details ? 0 : undefined}
+      title={details ? "Открыть медиа на весь экран" : undefined}
+    >
       {isVideo ? (
         <video
           className={details ? "profile-entry-details-media" : "profile-entry-video"}
-          src={getSafeAppFileUrl(active.url)}
+          src={safeActiveUrl}
           controls={details}
           muted={!details}
           playsInline
@@ -296,7 +377,7 @@ function EntryMediaGallery({ entry, details = false, alt = "Медиа запи�
         />
       ) : (
         <img
-          src={getSafeAppFileUrl(active.url)}
+          src={safeActiveUrl}
           alt={alt}
           className={details ? "profile-entry-details-media" : "profile-entry-image"}
           loading="lazy"
@@ -322,7 +403,7 @@ function EntryMediaGallery({ entry, details = false, alt = "Медиа запи�
   );
 }
 
-function EntryCard({ entry, isAdmin, onOpenDetails, onOpenWeather, onOpenMap, onOpenFeed, onAdminDelete }) {
+function EntryCard({ entry, isAdmin, onOpenDetails, onOpenWeather, onOpenMap, onOpenFeed, onShare, onAdminDelete }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
 
@@ -358,7 +439,7 @@ function EntryCard({ entry, isAdmin, onOpenDetails, onOpenWeather, onOpenMap, on
 
   return (
     <article
-      className="profile-entry-card profile-entry-card-clickable"
+      className={`profile-entry-card profile-entry-card-clickable ${menuOpen ? "profile-entry-card-menu-open" : ""}`}
       onClick={() => onOpenDetails?.(entry)}
       role="button"
       tabIndex={0}
@@ -381,34 +462,40 @@ function EntryCard({ entry, isAdmin, onOpenDetails, onOpenWeather, onOpenMap, on
           )}
         </div>
 
-        {(isPublishedToFeed || isAdmin) && (
-          <div className="profile-entry-menu-wrap" ref={menuRef} onClick={(event) => event.stopPropagation()}>
-            <button
-              className="profile-entry-menu-button"
-              onClick={() => setMenuOpen((value) => !value)}
-              type="button"
-              aria-label="Действия с записью"
-            >
-              ⋮
-            </button>
-
-            {menuOpen && (
-              <div className="profile-entry-menu">
-                {isPublishedToFeed && (
-                  <button onClick={(event) => stopAndRun(event, onOpenFeed)} type="button">
-                    Посмотреть в ленте
-                  </button>
-                )}
-                {isAdmin && (
-                  <button onClick={(event) => stopAndRun(event, onAdminDelete)} type="button">
-                    Удалить запись
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        )}
       </div>
+
+      {(isPublishedToFeed || onShare || isAdmin) && (
+        <div className="profile-entry-menu-wrap" ref={menuRef} onClick={(event) => event.stopPropagation()}>
+          <button
+            className="profile-entry-menu-button"
+            onClick={() => setMenuOpen((value) => !value)}
+            type="button"
+            aria-label="Действия с записью"
+          >
+            ⋮
+          </button>
+
+          {menuOpen && (
+            <div className="profile-entry-menu">
+              {isPublishedToFeed && (
+                <button onClick={(event) => stopAndRun(event, onOpenFeed)} type="button">
+                  Посмотреть в ленте
+                </button>
+              )}
+              {onShare && (
+                <button onClick={(event) => stopAndRun(event, onShare)} type="button">
+                  Поделиться в чат
+                </button>
+              )}
+              {isAdmin && (
+                <button onClick={(event) => stopAndRun(event, onAdminDelete)} type="button">
+                  Удалить запись
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="profile-entry-body">
         <div className="profile-entry-topline">
@@ -459,87 +546,25 @@ function EntryCard({ entry, isAdmin, onOpenDetails, onOpenWeather, onOpenMap, on
   );
 }
 
-function EntryDetailsModal({ entry, isOpen, isAdmin, onClose, onOpenWeather, onOpenMap, onOpenFeed, onAdminDelete }) {
-  if (!isOpen || !entry) return null;
-
-  const fishingStart = entry.fishingStartedAt || entry.startTime || entry.fishingDate;
-  const fishingEnd = entry.fishingEndedAt || entry.endTime;
-  const hasWeatherPage = entry.latitude != null && entry.longitude != null;
-  const hasMapPoint = entry.latitude != null && entry.longitude != null;
-  const isPublishedToFeed = entry.isPublishedToFeed ?? true;
-
+function EntryDetailsModal({ entry, isOpen, isAdmin, onClose, onOpenWeather, onOpenMap, onOpenFeed, onShare, onAdminDelete, authorLabel, authorAvatarUrl, authorUserId, onOpenAuthor }) {
   return (
-    <div className="profile-modal-backdrop" onClick={onClose}>
-      <article className="profile-modal-card profile-entry-details-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="profile-modal-header">
-          <div>
-            <p className="profile-kicker">Полная запись</p>
-            <h2>{entry.title || "Запись о рыбалке"}</h2>
-          </div>
-          <button className="profile-form-ghost-button" onClick={onClose} type="button">
-            Закрыть
-          </button>
-        </div>
-
-        <EntryMediaGallery entry={entry} details alt={entry.title || "Запись о рыбалке"} />
-
-        <div className="profile-entry-details-content">
-          <div className="profile-entry-details-main">
-            <span>{formatFishingRange(fishingStart, fishingEnd)}</span>
-            <strong>{entry.locationName || "Место не указано"}</strong>
-          </div>
-
-          {entry.weatherSummary && (
-            <button
-              className="profile-entry-weather-line profile-entry-weather-button"
-              onClick={() => onOpenWeather(entry)}
-              type="button"
-              disabled={!hasWeatherPage}
-            >
-              <span className="profile-entry-weather-icon">☁</span>
-              <span>{entry.weatherSummary}</span>
-            </button>
-          )}
-
-          {entry.description ? (
-            <p className="profile-entry-details-description">{entry.description}</p>
-          ) : (
-            <p className="muted-text">Описание не заполнено.</p>
-          )}
-
-          <div className="profile-entry-meta profile-entry-details-meta">
-            {entry.catchType && <span>Рыба: {entry.catchType}</span>}
-            {entry.catchWeight != null && entry.catchWeight !== "" && <span>Вес: {entry.catchWeight}</span>}
-            {entry.bait && <span>Наживка: {entry.bait}</span>}
-            <span>Публичная</span>
-            {isPublishedToFeed && <span>Опубликована в ленте</span>}
-          </div>
-
-          <div className="profile-entry-details-actions">
-            {hasMapPoint && (
-              <button className="profile-form-ghost-button" onClick={() => onOpenMap(entry)} type="button">
-                Посмотреть на карте
-              </button>
-            )}
-            {hasWeatherPage && (
-              <button className="profile-form-ghost-button" onClick={() => onOpenWeather(entry)} type="button">
-                Погода в этот день
-              </button>
-            )}
-            {isPublishedToFeed && (
-              <button className="profile-form-primary-button" onClick={() => onOpenFeed(entry)} type="button">
-                Посмотреть в ленте
-              </button>
-            )}
-            {isAdmin && (
-              <button className="button-danger" onClick={() => onAdminDelete(entry)} type="button">
-                Удалить запись
-              </button>
-            )}
-          </div>
-        </div>
-      </article>
-    </div>
+    <FishingEntryDetailsModal
+      entry={entry}
+      isOpen={isOpen}
+      sourceLabel="Запись пользователя"
+      authorLabel={authorLabel}
+      authorAvatarUrl={authorAvatarUrl}
+      authorUserId={authorUserId}
+      onClose={onClose}
+      onOpenWeather={onOpenWeather}
+      onOpenMap={onOpenMap}
+      onOpenFeed={onOpenFeed}
+      onOpenAuthor={onOpenAuthor}
+      onShare={onShare}
+      onAdminDelete={onAdminDelete}
+      isAdmin={isAdmin}
+      historyKey="user-profile-entry-details"
+    />
   );
 }
 
@@ -598,6 +623,13 @@ export default function UserProfilePage() {
   const [selectedEntry, setSelectedEntry] = useState(null);
   const [activeTab, setActiveTab] = useState("posts");
   const [presence, setPresence] = useState(null);
+  const [shareModalEntry, setShareModalEntry] = useState(null);
+  const [availableChats, setAvailableChats] = useState([]);
+  const [loadingShareChats, setLoadingShareChats] = useState(false);
+  const [shareChatSearch, setShareChatSearch] = useState("");
+  const [shareMessageText, setShareMessageText] = useState("");
+  const [selectedShareChatIds, setSelectedShareChatIds] = useState([]);
+  const [shareSending, setShareSending] = useState(false);
 
   function showMessage(text, isError = false) {
     setMessage(text);
@@ -689,6 +721,135 @@ export default function UserProfilePage() {
       window.removeEventListener("touchstart", handlePointerDown);
     };
   }, [profileMenuOpen]);
+
+  useEffect(() => {
+    if (!shareModalEntry) return undefined;
+
+    async function loadShareChats() {
+      try {
+        setLoadingShareChats(true);
+        setMessage("");
+        const data = await getChats();
+        setAvailableChats(Array.isArray(data) ? data : []);
+      } catch (err) {
+        console.error(err);
+        showMessage(`Не удалось загрузить чаты: ${err.message}`, true);
+      } finally {
+        setLoadingShareChats(false);
+      }
+    }
+
+    loadShareChats();
+  }, [shareModalEntry]);
+
+  useEffect(() => {
+    if (selectedEntry) return;
+    const restoredEntry = getRestoredEntryDetails("user-profile-entry-details");
+    if (restoredEntry?.id) {
+      setSelectedEntry(restoredEntry);
+    }
+  }, [selectedEntry]);
+
+  useEffect(() => {
+    if (!shareModalEntry || typeof document === "undefined") return undefined;
+
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        closeShareModal();
+      }
+    }
+
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    document.body.classList.add("feed-modal-open");
+    document.documentElement.classList.add("feed-modal-open");
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+      document.body.classList.remove("feed-modal-open");
+      document.documentElement.classList.remove("feed-modal-open");
+    };
+  }, [shareModalEntry]);
+
+  const filteredShareChats = useMemo(() => {
+    const query = shareChatSearch.trim().toLowerCase();
+    if (!query) return availableChats;
+
+    return availableChats.filter((chat) =>
+      [chat.name, chat.lastMessageText, chat.lastMessageUserName]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(query)
+    );
+  }, [availableChats, shareChatSearch]);
+
+  function closeShareModal() {
+    setShareModalEntry(null);
+    setShareMessageText("");
+    setShareChatSearch("");
+    setSelectedShareChatIds([]);
+  }
+
+  function openShareEntryModal(entry) {
+    setShareModalEntry(entry);
+    setShareMessageText("");
+    setShareChatSearch("");
+    setSelectedShareChatIds([]);
+  }
+
+  function toggleShareChat(chatId) {
+    setSelectedShareChatIds((current) =>
+      current.includes(chatId)
+        ? current.filter((chatIdInList) => chatIdInList !== chatId)
+        : [...current, chatId]
+    );
+  }
+
+  async function handleSendShareToChats() {
+    if (!shareModalEntry?.id || selectedShareChatIds.length === 0) return;
+
+    const selectedChats = availableChats.filter((chat) => selectedShareChatIds.includes(chat.id));
+    if (selectedChats.length === 0) return;
+
+    try {
+      setShareSending(true);
+      setMessage("");
+      setIsErrorMessage(false);
+
+      const note = shareMessageText.trim();
+
+      for (const chat of selectedChats) {
+        await shareFishingEntryToChat(chat.id, shareModalEntry.id, note || null);
+      }
+
+      if (shareModalEntry.visibility !== 0 && shareModalEntry.isPublishedToFeed) {
+        try {
+          await shareFishingEntry(shareModalEntry.id);
+        } catch (err) {
+          console.warn("Не удалось обновить счетчик репостов:", err);
+        }
+      }
+
+      showMessage(
+        selectedChats.length === 1
+          ? `Запись отправлена в чат «${selectedChats[0]?.name || "Чат"}».`
+          : `Запись отправлена в ${selectedChats.length} чата.`
+      );
+      closeShareModal();
+    } catch (err) {
+      console.error(err);
+      showMessage(`Не удалось отправить запись в чат: ${err.message}`, true);
+    } finally {
+      setShareSending(false);
+    }
+  }
 
   async function handleAddFriend() {
     try {
@@ -1187,12 +1348,12 @@ export default function UserProfilePage() {
           </div>
         </div>
 
-        <div className="profile-stats">
-          <div className="profile-stat profile-stat-static">
+        <div className="profile-stats profile-public-stats">
+          <div className="profile-stat profile-stat-static profile-public-stat">
             <strong>{entries.length}</strong>
-            <span>публикаций</span>
+            <span>{entries.length === 1 ? "публикация" : "публикаций"}</span>
           </div>
-          <div className={`profile-stat profile-stat-static profile-presence-stat ${presenceStatus.isOnline ? "is-online" : "is-offline"}`}>
+          <div className={`profile-stat profile-stat-static profile-presence-stat profile-public-presence ${presenceStatus.isOnline ? "is-online" : "is-offline"}`}>
             <strong>
               <span className="profile-presence-dot" aria-hidden="true" />
               {presenceStatus.title}
@@ -1201,7 +1362,7 @@ export default function UserProfilePage() {
           </div>
         </div>
 
-        <div className="profile-actions">
+        <div className="profile-actions profile-public-actions">
           {renderFriendButton()}
           <button
             className="button-secondary"
@@ -1211,9 +1372,9 @@ export default function UserProfilePage() {
           >
             {chatLoading ? "Открываем..." : "Написать"}
           </button>
-          <div ref={profileMenuRef} style={{ position: "relative" }}>
+          <div className="profile-public-menu-dropdown" ref={profileMenuRef}>
             <button
-              className="button-secondary"
+              className="button-secondary profile-public-menu-button"
               type="button"
               onClick={() => setProfileMenuOpen((value) => !value)}
               aria-label="Действия с профилем"
@@ -1221,22 +1382,7 @@ export default function UserProfilePage() {
               ⋯
             </button>
             {profileMenuOpen && (
-              <div
-                style={{
-                  position: "absolute",
-                  right: 0,
-                  top: "calc(100% + 8px)",
-                  zIndex: 20,
-                  minWidth: 240,
-                  display: "grid",
-                  gap: 6,
-                  padding: 8,
-                  borderRadius: 14,
-                  background: "rgba(15, 23, 42, 0.98)",
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  boxShadow: "0 16px 34px rgba(0,0,0,0.35)",
-                }}
-              >
+              <div className="profile-public-menu">
                 <button className="button-secondary" type="button" onClick={openReportModal}>
                   Пожаловаться
                 </button>
@@ -1295,10 +1441,9 @@ export default function UserProfilePage() {
 
         {activeTab === "posts" && (
           <>
-            <div className="profile-section-header">
+            <div className="profile-section-header profile-public-section-header">
               <div>
-                <p className="profile-kicker">Лента пользователя</p>
-                <h2 className="section-title">Публичные записи</h2>
+                <h2 className="section-title">Записи пользователя</h2>
               </div>
             </div>
 
@@ -1318,6 +1463,7 @@ export default function UserProfilePage() {
                     onOpenWeather={handleOpenWeather}
                     onOpenMap={handleOpenEntryMap}
                     onOpenFeed={handleOpenEntryInFeed}
+                    onShare={openShareEntryModal}
                     onAdminDelete={handleAdminDeleteEntry}
                   />
                 ))}
@@ -1363,6 +1509,98 @@ export default function UserProfilePage() {
         )}
       </section>
 
+      {shareModalEntry && (
+        <div className="feed-share-modal-backdrop profile-feed-share-modal-backdrop" onClick={closeShareModal}>
+          <div className="feed-share-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="feed-share-modal-header">
+              <div>
+                <h3>Поделиться в чат</h3>
+                <p>{getEntryShareTitle(shareModalEntry)}</p>
+              </div>
+
+              <button
+                type="button"
+                className="feed-share-close"
+                onClick={closeShareModal}
+                aria-label="Закрыть"
+              >
+                <span className="feed-share-close-icon" aria-hidden="true">×</span>
+              </button>
+            </div>
+
+            <textarea
+              className="feed-share-message"
+              value={shareMessageText}
+              onChange={(event) => setShareMessageText(event.target.value)}
+              maxLength={1000}
+              placeholder="Сообщение к записи, необязательно"
+            />
+
+            <input
+              className="feed-input feed-share-search"
+              value={shareChatSearch}
+              onChange={(event) => setShareChatSearch(event.target.value)}
+              placeholder="Найти чат"
+            />
+
+            <div className="feed-share-chat-list">
+              {loadingShareChats ? (
+                <div className="feed-empty-comments">Загружаем чаты...</div>
+              ) : filteredShareChats.length === 0 ? (
+                <div className="feed-empty-comments">Чаты не найдены.</div>
+              ) : (
+                filteredShareChats.map((chat) => {
+                  const isSelected = selectedShareChatIds.includes(chat.id);
+                  const safeAvatarUrl = getSafeImageUrl(chat.targetUserAvatarUrl || chat.avatarUrl);
+
+                  return (
+                    <button
+                      key={chat.id}
+                      type="button"
+                      className={`feed-share-chat ${isSelected ? "selected" : ""}`}
+                      disabled={shareSending}
+                      onClick={() => toggleShareChat(chat.id)}
+                    >
+                      <div className="feed-share-chat-avatar">
+                        {safeAvatarUrl ? (
+                          <img src={safeAvatarUrl} alt={chat.name || "Чат"} loading="lazy" decoding="async" />
+                        ) : (
+                          <span>{getInitials(chat.name || "Ч")}</span>
+                        )}
+                      </div>
+
+                      <div className="feed-share-chat-info">
+                        <strong>{chat.name || "Чат"}</strong>
+                        <span>{chat.type === "Group" ? "Групповой чат" : chat.type === "Private" ? "Личный чат" : "Чат"}</span>
+                      </div>
+
+                      <span className="feed-share-check" aria-hidden="true">
+                        <span className="feed-share-check-icon">{isSelected ? "✓" : ""}</span>
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="feed-share-footer">
+              <div className="feed-share-selected-count">
+                Выбрано: {selectedShareChatIds.length}
+              </div>
+
+              <button
+                type="button"
+                className="feed-action-button primary feed-share-send-button"
+                disabled={selectedShareChatIds.length === 0 || shareSending}
+                onClick={handleSendShareToChats}
+              >
+                {shareSending ? "Отправляем..." : "Отправить"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <EntryDetailsModal
         isOpen={Boolean(selectedEntry)}
         entry={selectedEntry}
@@ -1371,6 +1609,11 @@ export default function UserProfilePage() {
         onOpenWeather={handleOpenWeather}
         onOpenMap={handleOpenEntryMap}
         onOpenFeed={handleOpenEntryInFeed}
+        authorLabel={getDisplayName(profile)}
+        authorAvatarUrl={profile.avatarUrl}
+        authorUserId={profile.id || profile.userId || id}
+        onOpenAuthor={handleOpenEntryAuthor}
+        onShare={openShareEntryModal}
         onAdminDelete={handleAdminDeleteEntry}
       />
 

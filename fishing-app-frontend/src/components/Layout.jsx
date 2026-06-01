@@ -373,6 +373,15 @@ export default function Layout({ children }) {
   const shouldHideHeader = isChatsPage || isChatDetailsPage;
   const shouldHideLegalFooter = isChatsPage || isChatDetailsPage;
 
+  const appHeaderTitle = useMemo(() => {
+    if (location.pathname === "/" || location.pathname.startsWith("/feed")) return "НаКлёве · Лента";
+    if (location.pathname.startsWith("/map-points")) return "НаКлёве · Карта";
+    if (location.pathname.startsWith("/weather")) return "НаКлёве · Погода";
+    if (location.pathname.startsWith("/profile") || location.pathname.startsWith("/users")) return "НаКлёве · Профиль";
+    if (location.pathname.startsWith("/chats")) return "НаКлёве · Чаты";
+    return "НаКлёве";
+  }, [location.pathname]);
+
   function isAppWindowActive() {
     if (typeof document === "undefined") return true;
 
@@ -959,7 +968,21 @@ export default function Layout({ children }) {
               gap: "12px",
             }}
           >
-            <div style={{ fontWeight: 800, fontSize: "22px" }}>НаКлёве</div>
+            <div
+              style={{
+                minWidth: 0,
+                overflow: "hidden",
+                color: "#f8fafc",
+                fontWeight: 900,
+                fontSize: "clamp(18px, 5vw, 22px)",
+                letterSpacing: "0.01em",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+              title={appHeaderTitle}
+            >
+              {appHeaderTitle}
+            </div>
 
             {isAuthenticated ? (
               <div className="app-header-actions">

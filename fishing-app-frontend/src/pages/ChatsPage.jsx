@@ -101,6 +101,17 @@ function mergeChatDetailsIntoListItem(chat, updated) {
   };
 }
 
+function isFishingEntryDetailsModalActive() {
+  if (typeof window === "undefined") return false;
+
+  return Boolean(
+    window.__nakleveEntryDetailsModalOpen
+      || window.history.state?.fishingEntryDetailsModal
+      || document.querySelector(".entry-viewer-backdrop")
+      || document.querySelector(".entry-viewer")
+  );
+}
+
 export default function ChatsPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -580,6 +591,14 @@ export default function ChatsPage() {
     function handlePopState() {
       if (!selectedChatRef.current) return;
 
+      // Полная запись в чате добавляет свой history-state поверх открытого чата.
+      // Когда пользователь нажимает Back/кнопку назад мыши/назад на телефоне,
+      // первым popstate видит эта страница чатов. Здесь нельзя закрывать чат:
+      // событие должен обработать FishingEntryDetailsModal и закрыть только запись.
+      if (isFishingEntryDetailsModalActive()) {
+        return;
+      }
+
       handlingChatHistoryBackRef.current = true;
       chatHistoryPushedRef.current = false;
       closeActiveChat();
@@ -592,6 +611,12 @@ export default function ChatsPage() {
     function handleKeyDown(e) {
       if (e.key !== "Escape") return;
       if (!selectedChatRef.current) return;
+
+      // Escape поверх полной записи должен закрывать только запись.
+      // Не гасим событие здесь: модалка ловит его сама и не даёт ему закрыть чат.
+      if (isFishingEntryDetailsModalActive()) {
+        return;
+      }
 
       e.preventDefault();
       closeActiveChat();

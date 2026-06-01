@@ -406,14 +406,6 @@ export default function WeatherPage() {
 
   return (
     <div className="weather-page">
-      <header className="weather-page-header">
-        <div>
-          <p className="weather-kicker">НаКлёве · погода</p>
-          <h1>Погода для рыбалки</h1>
-          <p>Поиск места, выбор точки на карте и подробный прогноз на нужную дату.</p>
-        </div>
-      </header>
-
       <section className="weather-map-card">
         <form className="weather-search" onSubmit={handleSearchPlace}>
           <input

@@ -706,3 +706,62 @@
 .weather-hourly-table tr:last-child td {
   border-bottom-color: transparent;
 }
+
+/* ===== Weather v14: no top duplicate title and mobile edge-to-edge layout ===== */
+.weather-page-header {
+  display: none;
+}
+
+.weather-page {
+  padding-top: 14px;
+}
+
+@media (max-width: 760px) {
+  main.page-container:has(> .weather-page) {
+    width: 100%;
+    max-width: none;
+    padding: 0;
+  }
+
+  .weather-page {
+    padding: 8px 0 max(108px, env(safe-area-inset-bottom));
+  }
+
+  .weather-map-card,
+  .weather-summary-card,
+  .weather-week-section,
+  .weather-hourly-section,
+  .weather-message,
+  .weather-loading-panel {
+    width: 100%;
+    max-width: none;
+    margin-left: 0;
+    margin-right: 0;
+    border-left: 0;
+    border-right: 0;
+    border-radius: 0;
+  }
+
+  .weather-map-card {
+    padding: 12px 10px;
+  }
+
+  .weather-summary-card,
+  .weather-week-section,
+  .weather-hourly-section,
+  .weather-message,
+  .weather-loading-panel {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .weather-search,
+  .weather-date-input-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .weather-map-wrapper {
+    border-radius: 18px;
+  }
+}
