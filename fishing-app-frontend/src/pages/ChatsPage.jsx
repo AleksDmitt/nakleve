@@ -1036,6 +1036,60 @@ export default function ChatsPage() {
       rememberVoiceRecordingUser(payload);
     };
 
+    const handleChatVoiceMessageListened = (payload) => {
+      const payloadChatId = payload?.chatId ? String(payload.chatId) : null;
+      const attachmentId = payload?.attachmentId ? String(payload.attachmentId) : null;
+      const listenerUserId = payload?.userId ? String(payload.userId) : null;
+
+      if (!payloadChatId || payloadChatId !== String(currentChatIdRef.current || "")) return;
+      if (!attachmentId || !listenerUserId) return;
+
+      const currentUserId = String(user?.id || "");
+      const isCurrentUserListener = listenerUserId === currentUserId;
+
+      setMessages((prev) =>
+        prev.map((msg) => {
+          const isOwnMessage = String(msg.userId || "") === currentUserId;
+          const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];
+          let changed = false;
+
+          const nextAttachments = attachments.map((attachment) => {
+            if (String(attachment.id || "") !== attachmentId) return attachment;
+
+            changed = true;
+
+            const nextAttachment = {
+              ...attachment,
+            };
+
+            if (isCurrentUserListener) {
+              nextAttachment.isVoiceListenedByCurrentUser = true;
+            }
+
+            if (isOwnMessage) {
+              const nextTargetCount = Number(payload.voiceListenTargetCount ?? attachment.voiceListenTargetCount ?? 0);
+              const nextListenedCount = Number(payload.voiceListenedByOthersCount ?? attachment.voiceListenedByOthersCount ?? 0);
+
+              nextAttachment.voiceListenTargetCount = nextTargetCount;
+              nextAttachment.voiceListenedByOthersCount = nextListenedCount;
+              nextAttachment.isVoiceListenedByOthers = Boolean(payload.isVoiceListenedByOthers) || (
+                nextTargetCount > 0 && nextListenedCount >= nextTargetCount
+              );
+            }
+
+            return nextAttachment;
+          });
+
+          return changed
+            ? {
+                ...msg,
+                attachments: nextAttachments,
+              }
+            : msg;
+        })
+      );
+    };
+
     const handleChatReadStateChanged = (payload) => {
       const payloadChatId = payload?.chatId ? String(payload.chatId) : null;
       const readerUserId = payload?.userId ? String(payload.userId) : null;
@@ -1096,6 +1150,7 @@ export default function ChatsPage() {
         connection.on("ChatReadStateChanged", handleChatReadStateChanged);
         connection.on("ChatTypingChanged", handleChatTypingChanged);
         connection.on("ChatVoiceRecordingChanged", handleChatVoiceRecordingChanged);
+        connection.on("ChatVoiceMessageListened", handleChatVoiceMessageListened);
         connection.onreconnecting(handleReconnecting);
         connection.onreconnected(handleReconnected);
         connection.onclose(handleClose);
@@ -1121,6 +1176,7 @@ export default function ChatsPage() {
         connection.off("ChatReadStateChanged", handleChatReadStateChanged);
         connection.off("ChatTypingChanged", handleChatTypingChanged);
         connection.off("ChatVoiceRecordingChanged", handleChatVoiceRecordingChanged);
+        connection.off("ChatVoiceMessageListened", handleChatVoiceMessageListened);
         connection.onreconnecting(() => {});
         connection.onreconnected(() => {});
         connection.onclose(() => {});

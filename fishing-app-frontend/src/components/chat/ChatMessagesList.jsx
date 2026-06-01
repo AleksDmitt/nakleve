@@ -411,17 +411,39 @@ function VoiceMessageAttachment({ attachment, safeFileUrl, isMine, isDisabled, o
   const [currentMs, setCurrentMs] = useState(0);
   const [durationMs, setDurationMs] = useState(attachment.voiceDurationMs || 0);
   const [isLocallyListened, setIsLocallyListened] = useState(Boolean(attachment.isVoiceListenedByCurrentUser));
+  const [localListenedByOthersCount, setLocalListenedByOthersCount] = useState(Number(attachment.voiceListenedByOthersCount || 0));
+  const [localListenTargetCount, setLocalListenTargetCount] = useState(Number(attachment.voiceListenTargetCount || 0));
+  const [isLocallyListenedByOthers, setIsLocallyListenedByOthers] = useState(Boolean(attachment.isVoiceListenedByOthers));
   const listenReportedRef = useRef(Boolean(attachment.isVoiceListenedByCurrentUser));
   const bars = getVoiceWaveformBars(attachment.voiceWaveform);
   const progress = durationMs > 0 ? Math.min(1, currentMs / durationMs) : 0;
   const activeBars = Math.round(progress * bars.length);
-  const shouldShowUnlistenedDot = !isMine && !isLocallyListened && !isDisabled;
+  const shouldShowUnlistenedDot = !isDisabled && (
+    (!isMine && !isLocallyListened) ||
+    (isMine && localListenTargetCount > 0 && !isLocallyListenedByOthers)
+  );
+  const unlistenedTitle = isMine ? "Голосовое еще не прослушали" : "Голосовое не прослушано";
 
   useEffect(() => {
     const nextValue = Boolean(attachment.isVoiceListenedByCurrentUser);
+    const nextListenedByOthersCount = Number(attachment.voiceListenedByOthersCount || 0);
+    const nextListenTargetCount = Number(attachment.voiceListenTargetCount || 0);
+    const nextListenedByOthers = Boolean(attachment.isVoiceListenedByOthers) || (
+      nextListenTargetCount > 0 && nextListenedByOthersCount >= nextListenTargetCount
+    );
+
     setIsLocallyListened(nextValue);
+    setLocalListenedByOthersCount(nextListenedByOthersCount);
+    setLocalListenTargetCount(nextListenTargetCount);
+    setIsLocallyListenedByOthers(nextListenedByOthers);
     listenReportedRef.current = nextValue;
-  }, [attachment.isVoiceListenedByCurrentUser, attachment.id]);
+  }, [
+    attachment.isVoiceListenedByCurrentUser,
+    attachment.isVoiceListenedByOthers,
+    attachment.voiceListenedByOthersCount,
+    attachment.voiceListenTargetCount,
+    attachment.id,
+  ]);
 
   function markVoiceAsListenedOnce() {
     if (isMine || isDisabled || listenReportedRef.current || !attachment.id) return;
@@ -527,8 +549,8 @@ function VoiceMessageAttachment({ attachment, safeFileUrl, isMine, isDisabled, o
 
       {shouldShowUnlistenedDot && (
         <span
-          title="Голосовое не прослушано"
-          aria-label="Голосовое не прослушано"
+          title={unlistenedTitle}
+          aria-label={unlistenedTitle}
           style={{
             position: "absolute",
             top: "7px",

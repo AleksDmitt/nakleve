@@ -12,4 +12,7 @@ public class ChatMessageAttachmentResponse
     public int? VoiceDurationMs { get; set; }
     public string? VoiceWaveform { get; set; }
     public bool IsVoiceListenedByCurrentUser { get; set; }
+    public bool IsVoiceListenedByOthers { get; set; }
+    public int VoiceListenedByOthersCount { get; set; }
+    public int VoiceListenTargetCount { get; set; }
 }

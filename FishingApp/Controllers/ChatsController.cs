@@ -582,6 +582,34 @@ public class ChatsController : ControllerBase
                 lastReadAt >= message.SentAt));
     }
 
+    private async Task<List<Guid>> GetVoiceListenTargetUserIdsAsync(Chat chat, Guid senderUserId)
+    {
+        if (chat.Type == ChatType.Private)
+        {
+            var otherUserId = chat.FirstUserId == senderUserId
+                ? chat.SecondUserId
+                : chat.FirstUserId;
+
+            return otherUserId.HasValue
+                ? new List<Guid> { otherUserId.Value }
+                : new List<Guid>();
+        }
+
+        if (chat.Type == ChatType.Group)
+        {
+            return await _context.ChatParticipants
+                .AsNoTracking()
+                .Where(x =>
+                    x.ChatId == chat.Id &&
+                    x.UserId != senderUserId &&
+                    x.Status == ChatParticipantStatus.Active)
+                .Select(x => x.UserId)
+                .ToListAsync();
+        }
+
+        return new List<Guid>();
+    }
+
     private static ChatMessageResponse BuildChatMessageResponse(
         ChatMessage message,
         AppUser user,
@@ -1084,23 +1112,51 @@ public class ChatsController : ControllerBase
             .Include(x => x.Attachments)
             .ToListAsync();
 
-        var voiceAttachmentIds = messageEntities
+        var incomingVoiceAttachmentIds = messageEntities
             .SelectMany(x => x.Attachments
                 .Where(a => a.IsVoiceMessage && x.UserId != currentUserId.Value)
                 .Select(a => a.Id))
             .ToList();
 
-        var listenedVoiceAttachmentIdList = voiceAttachmentIds.Count == 0
+        var listenedIncomingVoiceAttachmentIdList = incomingVoiceAttachmentIds.Count == 0
             ? new List<Guid>()
             : await _context.VoiceMessageListenStates
                 .AsNoTracking()
                 .Where(x =>
                     x.UserId == currentUserId.Value &&
-                    voiceAttachmentIds.Contains(x.ChatMessageAttachmentId))
+                    incomingVoiceAttachmentIds.Contains(x.ChatMessageAttachmentId))
                 .Select(x => x.ChatMessageAttachmentId)
                 .ToListAsync();
 
-        var listenedVoiceAttachmentIds = listenedVoiceAttachmentIdList.ToHashSet();
+        var listenedIncomingVoiceAttachmentIds = listenedIncomingVoiceAttachmentIdList.ToHashSet();
+
+        var ownVoiceAttachmentIds = messageEntities
+            .SelectMany(x => x.Attachments
+                .Where(a => a.IsVoiceMessage && x.UserId == currentUserId.Value)
+                .Select(a => a.Id))
+            .ToList();
+
+        var voiceListenTargetUserIds = await GetVoiceListenTargetUserIdsAsync(chat, currentUserId.Value);
+        var voiceListenTargetCount = voiceListenTargetUserIds.Count;
+
+        var ownVoiceListenCounts = new Dictionary<Guid, int>();
+
+        if (ownVoiceAttachmentIds.Count > 0 && voiceListenTargetUserIds.Count > 0)
+        {
+            var ownVoiceListenRows = await _context.VoiceMessageListenStates
+                .AsNoTracking()
+                .Where(x =>
+                    ownVoiceAttachmentIds.Contains(x.ChatMessageAttachmentId) &&
+                    voiceListenTargetUserIds.Contains(x.UserId))
+                .Select(x => new { x.ChatMessageAttachmentId, x.UserId })
+                .ToListAsync();
+
+            ownVoiceListenCounts = ownVoiceListenRows
+                .GroupBy(x => x.ChatMessageAttachmentId)
+                .ToDictionary(
+                    x => x.Key,
+                    x => x.Select(item => item.UserId).Distinct().Count());
+        }
 
         var messages = messageEntities
             .Select(x => new ChatMessageResponse
@@ -1123,18 +1179,29 @@ public class ChatsController : ControllerBase
                 IsDeletedForAll = x.IsDeletedForAll,
                 IsReadByOthers = false,
                 Attachments = x.Attachments
-                    .Select(a => new ChatMessageAttachmentResponse
+                    .Select(a =>
                     {
-                        Id = a.Id,
-                        FileName = a.FileName,
-                        FileUrl = a.FileUrl,
-                        ContentType = a.ContentType,
-                        Size = a.Size,
-                        AttachmentType = a.AttachmentType,
-                        IsVoiceMessage = a.IsVoiceMessage,
-                        VoiceDurationMs = a.VoiceDurationMs,
-                        VoiceWaveform = a.VoiceWaveform,
-                        IsVoiceListenedByCurrentUser = a.IsVoiceMessage && listenedVoiceAttachmentIds.Contains(a.Id)
+                        var isOwnVoice = a.IsVoiceMessage && x.UserId == currentUserId.Value;
+                        var listenedByOthersCount = isOwnVoice && ownVoiceListenCounts.TryGetValue(a.Id, out var storedListenedCount)
+                            ? Math.Min(storedListenedCount, voiceListenTargetCount)
+                            : 0;
+
+                        return new ChatMessageAttachmentResponse
+                        {
+                            Id = a.Id,
+                            FileName = a.FileName,
+                            FileUrl = a.FileUrl,
+                            ContentType = a.ContentType,
+                            Size = a.Size,
+                            AttachmentType = a.AttachmentType,
+                            IsVoiceMessage = a.IsVoiceMessage,
+                            VoiceDurationMs = a.VoiceDurationMs,
+                            VoiceWaveform = a.VoiceWaveform,
+                            IsVoiceListenedByCurrentUser = a.IsVoiceMessage && x.UserId != currentUserId.Value && listenedIncomingVoiceAttachmentIds.Contains(a.Id),
+                            IsVoiceListenedByOthers = isOwnVoice && (voiceListenTargetCount == 0 || listenedByOthersCount >= voiceListenTargetCount),
+                            VoiceListenedByOthersCount = listenedByOthersCount,
+                            VoiceListenTargetCount = isOwnVoice ? voiceListenTargetCount : 0
+                        };
                     })
                     .ToList()
             })
@@ -1207,12 +1274,39 @@ public class ChatsController : ControllerBase
             await _context.SaveChangesAsync();
         }
 
-        return Ok(new
+        var voiceListenTargetUserIds = await GetVoiceListenTargetUserIdsAsync(chat, attachment.ChatMessage.UserId);
+        var listenedUserIdList = voiceListenTargetUserIds.Count == 0
+            ? new List<Guid>()
+            : await _context.VoiceMessageListenStates
+                .AsNoTracking()
+                .Where(x =>
+                    x.ChatMessageAttachmentId == attachmentId &&
+                    voiceListenTargetUserIds.Contains(x.UserId))
+                .Select(x => x.UserId)
+                .ToListAsync();
+
+        var voiceListenedByOthersCount = listenedUserIdList.Distinct().Count();
+        var voiceListenTargetCount = voiceListenTargetUserIds.Count;
+        var isVoiceListenedByOthers = voiceListenTargetCount == 0 || voiceListenedByOthersCount >= voiceListenTargetCount;
+
+        var payload = new
         {
+            chatId = chat.Id,
+            messageId = attachment.ChatMessageId,
             attachmentId,
+            userId = currentUserId.Value,
             isVoiceListenedByCurrentUser = true,
+            isVoiceListenedByOthers,
+            voiceListenedByOthersCount,
+            voiceListenTargetCount,
             listenedAtUtc = existingState.ListenedAtUtc
-        });
+        };
+
+        await _chatHub.Clients
+            .Group($"chat_{chat.Id}")
+            .SendAsync("ChatVoiceMessageListened", payload);
+
+        return Ok(payload);
     }
 
     [HttpPost("{chatId:guid}/read-until")]
@@ -1483,6 +1577,17 @@ public class ChatsController : ControllerBase
         await _context.SaveChangesAsync();
 
         var response = BuildChatMessageResponse(message, user, replyToMessage, savedAttachments);
+
+        var voiceListenTargetUserIds = await GetVoiceListenTargetUserIdsAsync(chat, userId.Value);
+        var voiceListenTargetCount = voiceListenTargetUserIds.Count;
+
+        foreach (var attachment in response.Attachments.Where(x => x.IsVoiceMessage))
+        {
+            attachment.IsVoiceListenedByCurrentUser = false;
+            attachment.VoiceListenedByOthersCount = 0;
+            attachment.VoiceListenTargetCount = voiceListenTargetCount;
+            attachment.IsVoiceListenedByOthers = voiceListenTargetCount == 0;
+        }
 
         await _chatHub.Clients
             .Group($"chat_{chatId}")
