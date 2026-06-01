@@ -161,33 +161,7 @@ function readCoordinatePair(raw) {
 }
 
 function mapSearchResult(raw) {
-  const directLatitude = raw?.latitude ?? raw?.lat ?? raw?.Latitude ?? raw?.Lat;
-  const directLongitude = raw?.longitude ?? raw?.lon ?? raw?.lng ?? raw?.Longitude ?? raw?.Lon ?? raw?.Lng;
-
-  let latitude = Number(directLatitude);
-  let longitude = Number(directLongitude);
-
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-    const coordinates = raw?.coordinates ?? raw?.Coordinates ?? raw?.point?.coordinates ?? raw?.Point?.Coordinates;
-    if (Array.isArray(coordinates) && coordinates.length >= 2) {
-      // Яндекс и GeoJSON обычно возвращают [longitude, latitude].
-      longitude = Number(coordinates[0]);
-      latitude = Number(coordinates[1]);
-    }
-  }
-
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-    const pos = raw?.point?.pos ?? raw?.Point?.Pos ?? raw?.pos ?? raw?.Pos;
-    if (typeof pos === "string") {
-      const parts = pos.split(/[\s,]+/).filter(Boolean).map(Number);
-      if (parts.length >= 2) {
-        // Яндекс возвращает строку "longitude latitude".
-        longitude = Number(parts[0]);
-        latitude = Number(parts[1]);
-      }
-    }
-  }
-
+  const { latitude, longitude } = readCoordinatePair(raw);
   const address = raw?.address ?? raw?.Address ?? raw?.formattedAddress ?? raw?.FormattedAddress ?? "";
   const description = raw?.description ?? raw?.Description ?? address;
   const region = raw?.region ?? raw?.Region ?? extractRegionFromAddress(address || description);
@@ -215,60 +189,35 @@ function getSearchResultList(result) {
     || [];
 }
 
-async function trySearchEndpoint(url) {
+async function tryApiRequest(url) {
   try {
-    return {
-      ok: true,
-      status: 200,
-      data: await apiRequest(url),
-      message: null,
-    };
+    return await apiRequest(url);
   } catch (error) {
-    return {
-      ok: false,
-      status: Number(error?.status || 0),
-      data: error?.data || null,
-      message: error?.message || "Ошибка запроса",
-    };
+    console.warn("Place search endpoint failed:", url, error);
+    return null;
   }
 }
 
 async function searchPlaces(query) {
   const encoded = encodeURIComponent(query);
-
-  // Рабочие маршруты из старой версии карты. Новые варианты оставлены только запасными.
   const urls = [
     `/Geocoding/search?query=${encoded}`,
     `/geocoding/search?query=${encoded}`,
-    `/Geocoding?query=${encoded}`,
-    `/geocoding?query=${encoded}`,
+    `/Geocoding/search?text=${encoded}`,
+    `/geocoding/search?text=${encoded}`,
+    `/Geocoding/search?q=${encoded}`,
+    `/geocoding/search?q=${encoded}`,
   ];
 
-  const hardErrors = [];
-
   for (const url of urls) {
-    const response = await trySearchEndpoint(url);
-
-    if (!response.ok) {
-      // 404/405 означают, что такого варианта маршрута нет — пробуем следующий.
-      // 400 может быть из-за пустого/короткого запроса, но до сюда он уже валидируется.
-      if (![400, 404, 405].includes(response.status)) {
-        hardErrors.push(response.message);
-      }
-      continue;
-    }
-
-    const list = getSearchResultList(response.data)
+    const result = await tryApiRequest(url);
+    const list = getSearchResultList(result)
       .map(mapSearchResult)
       .filter((item) => Number.isFinite(item.latitude) && Number.isFinite(item.longitude));
 
     if (list.length > 0) {
       return list;
     }
-  }
-
-  if (hardErrors.length > 0) {
-    throw new Error(hardErrors[0]);
   }
 
   return [];

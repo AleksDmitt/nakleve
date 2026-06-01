@@ -279,3 +279,34 @@
     z-index: 23;
   }
 }
+
+/* ===== YandexMap v11: restore save gestures and fix WeatherPage controls ===== */
+.yandex-map-container {
+  touch-action: pan-x pan-y;
+}
+
+.weather-map-wrapper .yandex-map-type-switcher {
+  top: 14px !important;
+  left: 14px !important;
+  right: auto !important;
+}
+
+.weather-map-wrapper .yandex-map-controls {
+  top: auto !important;
+  right: 14px !important;
+  bottom: 14px !important;
+  transform: none !important;
+}
+
+@media (max-width: 760px) {
+  .weather-map-wrapper .yandex-map-type-switcher {
+    top: 10px !important;
+    left: 10px !important;
+  }
+
+  .weather-map-wrapper .yandex-map-controls {
+    right: 10px !important;
+    bottom: 10px !important;
+    transform: none !important;
+  }
+}

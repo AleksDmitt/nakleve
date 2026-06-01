@@ -65,6 +65,37 @@ function getMapTilerKey() {
   return (import.meta.env.VITE_MAPTILER_KEY || "").trim();
 }
 
+
+function clampLatitude(latitude) {
+  return Math.max(-85.05112878, Math.min(85.05112878, latitude));
+}
+
+function lonLatToWorldPixel([lng, lat], zoom) {
+  const scale = 256 * 2 ** clampZoom(zoom);
+  const normalizedLng = ((Number(lng) + 180) / 360) * scale;
+  const sinLat = Math.sin((clampLatitude(Number(lat)) * Math.PI) / 180);
+  const normalizedLat = (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale;
+
+  return [normalizedLng, normalizedLat];
+}
+
+function worldPixelToLonLat([x, y], zoom) {
+  const scale = 256 * 2 ** clampZoom(zoom);
+  const lng = (Number(x) / scale) * 360 - 180;
+  const n = Math.PI - (2 * Math.PI * Number(y)) / scale;
+  const lat = (180 / Math.PI) * Math.atan(Math.sinh(n));
+
+  return [lng, lat];
+}
+
+function isMapOverlayElement(target) {
+  return Boolean(
+    target?.closest?.(
+      ".yandex-map-controls, .yandex-map-type-switcher, .yandex-map-marker-icon, button, input, textarea, select, a"
+    )
+  );
+}
+
 export default function YandexMap({
   points = [],
   userLocation = null,
@@ -89,6 +120,11 @@ export default function YandexMap({
   const locationButtonWasClickedRef = useRef(false);
   const zoomHoldTimeoutRef = useRef(null);
   const zoomHoldIntervalRef = useRef(null);
+  const containerRef = useRef(null);
+  const longPressTimeoutRef = useRef(null);
+  const longPressStartRef = useRef(null);
+  const nativeContextHandledAtRef = useRef(0);
+  const yandexContextHandledAtRef = useRef(0);
   const mapTilerKey = getMapTilerKey();
   const canUseSatellite = Boolean(mapTilerKey);
   const effectiveMapType = mapType === "satellite" && canUseSatellite ? "satellite" : "scheme";
@@ -148,6 +184,7 @@ export default function YandexMap({
   useEffect(() => {
     return () => {
       stopZoomHold();
+      clearLongPressTimer();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -305,6 +342,105 @@ export default function YandexMap({
     setMapType(nextType);
   }
 
+
+  function getCoordinatesFromClientPoint(clientX, clientY) {
+    const container = containerRef.current;
+    if (!container) return null;
+
+    const rect = container.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+
+    const centerWorld = lonLatToWorldPixel(currentCenter, currentZoom);
+    const deltaX = Number(clientX) - rect.left - rect.width / 2;
+    const deltaY = Number(clientY) - rect.top - rect.height / 2;
+    const [lng, lat] = worldPixelToLonLat([centerWorld[0] + deltaX, centerWorld[1] + deltaY], currentZoom);
+
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+    return { lat, lng };
+  }
+
+  function clearLongPressTimer() {
+    if (longPressTimeoutRef.current) {
+      window.clearTimeout(longPressTimeoutRef.current);
+      longPressTimeoutRef.current = null;
+    }
+  }
+
+  function requestSavePointFromClientPoint(clientX, clientY, source = "native") {
+    const now = Date.now();
+
+    if (source === "native" && now - yandexContextHandledAtRef.current < 260) {
+      return;
+    }
+
+    if (source === "yandex" && now - nativeContextHandledAtRef.current < 260) {
+      return;
+    }
+
+    const coords = getCoordinatesFromClientPoint(clientX, clientY);
+    if (!coords) return;
+
+    if (source === "native") {
+      nativeContextHandledAtRef.current = now;
+    } else {
+      yandexContextHandledAtRef.current = now;
+    }
+
+    moveCenterWithoutChangingZoom([coords.lng, coords.lat]);
+    onMapContextMenu?.(coords);
+  }
+
+  function handleContainerContextMenu(event) {
+    if (!onMapContextMenu || isMapOverlayElement(event.target)) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    requestSavePointFromClientPoint(event.clientX, event.clientY, "native");
+  }
+
+  function handleContainerPointerDown(event) {
+    if (!onMapContextMenu || event.pointerType === "mouse" || !event.isPrimary) return;
+    if (isMapOverlayElement(event.target)) return;
+
+    clearLongPressTimer();
+
+    longPressStartRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      pointerId: event.pointerId,
+    };
+
+    longPressTimeoutRef.current = window.setTimeout(() => {
+      const start = longPressStartRef.current;
+      if (!start || start.pointerId !== event.pointerId) return;
+
+      requestSavePointFromClientPoint(start.x, start.y, "native");
+      longPressStartRef.current = null;
+      clearLongPressTimer();
+    }, 640);
+  }
+
+  function handleContainerPointerMove(event) {
+    const start = longPressStartRef.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+
+    const dx = Math.abs(event.clientX - start.x);
+    const dy = Math.abs(event.clientY - start.y);
+
+    if (dx > 12 || dy > 12) {
+      longPressStartRef.current = null;
+      clearLongPressTimer();
+    }
+  }
+
+  function handleContainerPointerEnd(event) {
+    const start = longPressStartRef.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+
+    longPressStartRef.current = null;
+    clearLongPressTimer();
+  }
+
   function getPointerCoordinates(event) {
     const coords = event?.coordinates;
     if (!coords) return null;
@@ -327,6 +463,12 @@ export default function YandexMap({
     const coords = getPointerCoordinates(event);
     if (!coords) return;
 
+    const now = Date.now();
+    if (now - nativeContextHandledAtRef.current < 260) {
+      return;
+    }
+
+    yandexContextHandledAtRef.current = now;
     event?.domEvent?.preventDefault?.();
     event?.domEvent?.stopPropagation?.();
     moveCenterWithoutChangingZoom([coords.lng, coords.lat]);
@@ -354,7 +496,16 @@ export default function YandexMap({
   const shouldRenderSatellite = effectiveMapType === "satellite" && satelliteRasterSource && satelliteProjection;
 
   return (
-    <div className="yandex-map-container">
+    <div
+      ref={containerRef}
+      className="yandex-map-container"
+      onContextMenuCapture={handleContainerContextMenu}
+      onPointerDownCapture={handleContainerPointerDown}
+      onPointerMoveCapture={handleContainerPointerMove}
+      onPointerUpCapture={handleContainerPointerEnd}
+      onPointerCancelCapture={handleContainerPointerEnd}
+      onPointerLeaveCapture={handleContainerPointerEnd}
+    >
       <YMap
         key={`${shouldRenderSatellite ? "satellite" : "scheme"}-${satelliteProjection ? "mercator" : "default"}`}
         location={location}

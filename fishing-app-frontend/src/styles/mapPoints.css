@@ -2095,3 +2095,49 @@
     font-size: 12px;
   }
 }
+
+/* ===== Map points v11: desktop point info panel width only ===== */
+@media (min-width: 761px) {
+  .map-points-map-shell .map-points-selected-panel-info {
+    width: min(640px, calc(100% - 150px));
+    max-width: 640px;
+    min-width: 520px;
+    grid-template-columns: 44px minmax(240px, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .map-points-map-shell .map-points-selected-panel-info .map-points-selected-content {
+    min-width: 0;
+  }
+
+  .map-points-map-shell .map-points-selected-panel-info .map-points-selected-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-shrink: 0;
+    min-width: max-content;
+  }
+
+  .map-points-map-shell .map-points-selected-panel-info .map-points-primary-button,
+  .map-points-map-shell .map-points-selected-panel-info .map-points-secondary-button {
+    min-width: auto;
+    height: 34px;
+    padding: 0 13px;
+    white-space: nowrap;
+    font-size: 13px;
+  }
+
+  .map-points-map-shell .map-points-selected-panel-info .map-points-selected-close {
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    min-height: 30px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    line-height: 1;
+    padding: 0;
+  }
+}
