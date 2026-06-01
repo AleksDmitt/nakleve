@@ -64,10 +64,7 @@ public class AuthController : ControllerBase
         if (user == null)
             return NotFound(new { message = "Пользователь не найден." });
 
-        if (user.IsBlocked)
-            return Unauthorized(new { message = "Пользователь заблокирован." });
-
-        return Ok(CreateMeResponse(user));
+        return Ok(await CreateMeResponseAsync(user));
     }
 
     [Authorize]
@@ -135,7 +132,7 @@ public class AuthController : ControllerBase
             });
         }
 
-        return Ok(CreateMeResponse(user));
+        return Ok(await CreateMeResponseAsync(user));
     }
 
     [HttpPost("register")]
@@ -277,7 +274,7 @@ public class AuthController : ControllerBase
 
         if (user.EmailConfirmed)
         {
-            return Ok(CreateAuthResponse(user));
+            return Ok(await CreateAuthResponseAsync(user));
         }
 
         var isCodeValid = await _verificationCodeService.VerifyCodeAsync(
@@ -295,7 +292,7 @@ public class AuthController : ControllerBase
         if (!updateResult.Succeeded)
             return BadRequest(new { message = "Не удалось подтвердить email." });
 
-        return Ok(CreateAuthResponse(user));
+        return Ok(await CreateAuthResponseAsync(user));
     }
 
     [HttpPost("resend-email-code")]
@@ -577,9 +574,6 @@ public class AuthController : ControllerBase
         if (!isPasswordValid)
             return Unauthorized(new { message = "Неверный email или пароль." });
 
-        if (user.IsBlocked)
-            return Unauthorized(new { message = "Пользователь заблокирован." });
-
         if (!user.EmailConfirmed)
         {
             return StatusCode(403, new EmailConfirmationRequiredResponse
@@ -589,7 +583,7 @@ public class AuthController : ControllerBase
             });
         }
 
-        return Ok(CreateAuthResponse(user));
+        return Ok(await CreateAuthResponseAsync(user));
     }
 
     private static bool HasAcceptedCurrentLegalDocuments(AppUser user)
@@ -602,7 +596,7 @@ public class AuthController : ControllerBase
             && user.PersonalDataDistributionConsentVersion == CurrentPersonalDataDistributionConsentVersion;
     }
 
-    private static object CreateMeResponse(AppUser user)
+    private async Task<object> CreateMeResponseAsync(AppUser user)
     {
         var legalDocumentsAccepted = HasAcceptedCurrentLegalDocuments(user);
 
@@ -617,7 +611,7 @@ public class AuthController : ControllerBase
             user.EmailConfirmed,
             user.Region,
             user.About,
-            user.AvatarUrl,
+            AvatarUrl = user.IsBlocked ? null : user.AvatarUrl,
             user.CreatedAt,
             user.ChatToastsEnabled,
             user.HideChatMessageTextInNotifications,
@@ -632,13 +626,18 @@ public class AuthController : ControllerBase
             user.PersonalDataDistributionConsentVersion,
             LegalDocumentsAccepted = legalDocumentsAccepted,
             LegalDocumentsRequired = !legalDocumentsAccepted,
+            IsAdmin = await _userManager.IsInRoleAsync(user, "Admin"),
+            user.IsBlocked,
+            user.BlockReasonCode,
+            BlockReasonText = GetBlockReasonDisplayText(user),
+            user.BlockedAtUtc,
             CurrentUserAgreementVersion,
             CurrentPersonalDataConsentVersion,
             CurrentPersonalDataDistributionConsentVersion
         };
     }
 
-    private AuthResponse CreateAuthResponse(AppUser user)
+    private async Task<AuthResponse> CreateAuthResponseAsync(AppUser user)
     {
         return new AuthResponse
         {
@@ -649,6 +648,11 @@ public class AuthController : ControllerBase
             DisplayName = GetDisplayName(user),
             Email = user.Email!,
             EmailConfirmed = user.EmailConfirmed,
+            IsAdmin = await _userManager.IsInRoleAsync(user, "Admin"),
+            IsBlocked = user.IsBlocked,
+            BlockReasonCode = user.BlockReasonCode,
+            BlockReasonText = GetBlockReasonDisplayText(user),
+            BlockedAtUtc = user.BlockedAtUtc,
             UserAgreementAccepted = user.UserAgreementAccepted,
             UserAgreementVersion = user.UserAgreementVersion,
             PersonalDataConsentAccepted = user.PersonalDataConsentAccepted,
@@ -660,6 +664,42 @@ public class AuthController : ControllerBase
             ChatToastsEnabled = user.ChatToastsEnabled,
             HideChatMessageTextInNotifications = user.HideChatMessageTextInNotifications
         };
+    }
+
+
+    private static string? GetBlockReasonDisplayText(AppUser user)
+    {
+        if (!user.IsBlocked)
+            return null;
+
+        var labels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["nudity"] = "Нагота или материалы сексуального характера",
+            ["drugs"] = "Наркотики или запрещённые вещества",
+            ["illegal_ads"] = "Реклама запрещённых товаров или услуг",
+            ["spam"] = "Спам или массовая реклама",
+            ["abuse"] = "Оскорбления, угрозы или травля",
+            ["fraud"] = "Мошенничество или попытка обмана",
+            ["rules"] = "Нарушение правил сервиса",
+            ["other"] = "Другая причина"
+        };
+
+        string? label = null;
+        var hasLabel = !string.IsNullOrWhiteSpace(user.BlockReasonCode) &&
+                       labels.TryGetValue(user.BlockReasonCode, out label);
+
+        if (!string.IsNullOrWhiteSpace(user.BlockReasonText))
+        {
+            return hasLabel &&
+                   !string.IsNullOrWhiteSpace(label) &&
+                   !string.Equals(user.BlockReasonCode, "other", StringComparison.OrdinalIgnoreCase)
+                ? $"{label}. {user.BlockReasonText}"
+                : user.BlockReasonText;
+        }
+
+        return hasLabel && !string.IsNullOrWhiteSpace(label)
+            ? label
+            : "Нарушение правил сервиса";
     }
 
     private string GenerateJwtToken(AppUser user)

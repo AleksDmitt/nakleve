@@ -103,6 +103,16 @@ public class ChatHub : Hub
 
         if (userId.HasValue)
         {
+            var isBlocked = await _context.Users
+                .AsNoTracking()
+                .AnyAsync(x => x.Id == userId.Value && x.IsBlocked);
+
+            if (isBlocked)
+            {
+                Context.Abort();
+                return;
+            }
+
             await Groups.AddToGroupAsync(Context.ConnectionId, GetUserGroupName(userId.Value));
 
             var connections = UserConnections.GetOrAdd(userId.Value, _ => new HashSet<string>());
@@ -244,6 +254,13 @@ public class ChatHub : Hub
 
     private async Task<bool> HasAccessToChatAsync(Guid chatId, Guid userId)
     {
+        var userIsBlocked = await _context.Users
+            .AsNoTracking()
+            .AnyAsync(x => x.Id == userId && x.IsBlocked);
+
+        if (userIsBlocked)
+            return false;
+
         var chat = await _context.Chats
             .AsNoTracking()
             .FirstOrDefaultAsync(x => x.Id == chatId);

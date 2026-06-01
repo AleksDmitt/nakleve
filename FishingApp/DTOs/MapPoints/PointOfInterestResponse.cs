@@ -14,5 +14,7 @@ public class PointOfInterestResponse
     public string? Region { get; set; }
     public bool IsApproved { get; set; }
     public bool IsVisibleOnMap { get; set; }
+    public bool IsPublic { get; set; }
+    public bool CanManage { get; set; }
     public DateTime CreatedAt { get; set; }
 }

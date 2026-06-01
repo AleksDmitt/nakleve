@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { getPublicProfile } from "../api/profileApi";
+import { getPublicProfile, adminBlockUser, adminUnblockUser, reportUser, blockUser, unblockUser } from "../api/profileApi";
 import { createOrGetPersonalChat, getUserPresence } from "../api/chatsApi";
+import { adminDeleteFishingEntry } from "../api/fishingEntriesApi";
+import { useAuth } from "../context/AuthContext";
 import {
   sendFriendRequest,
   cancelOutgoingFriendRequest,
@@ -10,6 +12,27 @@ import {
 } from "../api/friendsApi";
 import "../styles/profile.css";
 import { getSafeAppFileUrl, getSafeImageUrl } from "../utils/safeUrl.js";
+
+const ADMIN_BLOCK_REASONS = [
+  { value: "nudity", label: "Нагота или материалы сексуального характера" },
+  { value: "drugs", label: "Наркотики или запрещённые вещества" },
+  { value: "illegal_ads", label: "Реклама запрещённых товаров или услуг" },
+  { value: "spam", label: "Спам или массовая реклама" },
+  { value: "abuse", label: "Оскорбления, угрозы или травля" },
+  { value: "fraud", label: "Мошенничество или попытка обмана" },
+  { value: "rules", label: "Нарушение правил сервиса" },
+  { value: "other", label: "Другая причина" },
+];
+
+function getBlockReasonText(profile) {
+  return profile?.blockReasonText || profile?.BlockReasonText || "Нарушение правил сервиса";
+}
+
+function getInteractionBlockText(profile) {
+  return profile?.interactionBlockText || profile?.InteractionBlockText || "Профиль недоступен.";
+}
+
+const SUPPORT_EMAIL = "rassokha.lesha@yandex.ru";
 
 function formatDate(value) {
   if (!value) return "Дата не указана";
@@ -299,7 +322,7 @@ function EntryMediaGallery({ entry, details = false, alt = "Медиа запи�
   );
 }
 
-function EntryCard({ entry, onOpenDetails, onOpenWeather, onOpenMap, onOpenFeed }) {
+function EntryCard({ entry, isAdmin, onOpenDetails, onOpenWeather, onOpenMap, onOpenFeed, onAdminDelete }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
 
@@ -358,7 +381,7 @@ function EntryCard({ entry, onOpenDetails, onOpenWeather, onOpenMap, onOpenFeed 
           )}
         </div>
 
-        {isPublishedToFeed && (
+        {(isPublishedToFeed || isAdmin) && (
           <div className="profile-entry-menu-wrap" ref={menuRef} onClick={(event) => event.stopPropagation()}>
             <button
               className="profile-entry-menu-button"
@@ -371,9 +394,16 @@ function EntryCard({ entry, onOpenDetails, onOpenWeather, onOpenMap, onOpenFeed 
 
             {menuOpen && (
               <div className="profile-entry-menu">
-                <button onClick={(event) => stopAndRun(event, onOpenFeed)} type="button">
-                  Посмотреть в ленте
-                </button>
+                {isPublishedToFeed && (
+                  <button onClick={(event) => stopAndRun(event, onOpenFeed)} type="button">
+                    Посмотреть в ленте
+                  </button>
+                )}
+                {isAdmin && (
+                  <button onClick={(event) => stopAndRun(event, onAdminDelete)} type="button">
+                    Удалить запись
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -429,7 +459,7 @@ function EntryCard({ entry, onOpenDetails, onOpenWeather, onOpenMap, onOpenFeed 
   );
 }
 
-function EntryDetailsModal({ entry, isOpen, onClose, onOpenWeather, onOpenMap, onOpenFeed }) {
+function EntryDetailsModal({ entry, isOpen, isAdmin, onClose, onOpenWeather, onOpenMap, onOpenFeed, onAdminDelete }) {
   if (!isOpen || !entry) return null;
 
   const fishingStart = entry.fishingStartedAt || entry.startTime || entry.fishingDate;
@@ -501,6 +531,11 @@ function EntryDetailsModal({ entry, isOpen, onClose, onOpenWeather, onOpenMap, o
                 Посмотреть в ленте
               </button>
             )}
+            {isAdmin && (
+              <button className="button-danger" onClick={() => onAdminDelete(entry)} type="button">
+                Удалить запись
+              </button>
+            )}
           </div>
         </div>
       </article>
@@ -539,6 +574,7 @@ function AvatarPreviewModal({ isOpen, imageUrl, onClose }) {
 export default function UserProfilePage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   const [profile, setProfile] = useState(null);
   const [friendshipStatus, setFriendshipStatus] = useState(null);
@@ -546,6 +582,16 @@ export default function UserProfilePage() {
   const [isErrorMessage, setIsErrorMessage] = useState(false);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const [adminActionLoading, setAdminActionLoading] = useState(false);
+  const [blockModalOpen, setBlockModalOpen] = useState(false);
+  const [blockReasonCode, setBlockReasonCode] = useState("rules");
+  const [blockReasonText, setBlockReasonText] = useState("");
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [reportReasonCode, setReportReasonCode] = useState("rules");
+  const [reportReasonText, setReportReasonText] = useState("");
+  const [reportLoading, setReportLoading] = useState(false);
+  const [userBlockLoading, setUserBlockLoading] = useState(false);
   const [chatLoading, setChatLoading] = useState(false);
   const [isAvatarOpen, setIsAvatarOpen] = useState(false);
   const [selectedEntry, setSelectedEntry] = useState(null);
@@ -568,7 +614,12 @@ export default function UserProfilePage() {
         setLoading(true);
         const data = await getPublicProfile(id);
         setProfile(data);
-        await loadFriendshipStatus();
+
+        if (data?.isBlocked || data?.isInteractionBlocked) {
+          setFriendshipStatus(null);
+        } else {
+          await loadFriendshipStatus();
+        }
       } catch (err) {
         console.error(err);
         showMessage(`Не удалось загрузить профиль: ${err.message}`, true);
@@ -581,7 +632,7 @@ export default function UserProfilePage() {
   }, [id]);
 
   useEffect(() => {
-    if (!id) return undefined;
+    if (!id || profile?.isBlocked || profile?.isInteractionBlocked) return undefined;
 
     let cancelled = false;
 
@@ -608,7 +659,7 @@ export default function UserProfilePage() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [id]);
+  }, [id, profile?.isBlocked, profile?.isInteractionBlocked]);
 
   useEffect(() => {
     if (!message) return undefined;
@@ -728,7 +779,211 @@ export default function UserProfilePage() {
     navigate(getFeedEntryPath(entry.id));
   }
 
+  function openReportModal() {
+    setProfileMenuOpen(false);
+    setReportReasonCode("rules");
+    setReportReasonText("");
+    setReportModalOpen(true);
+  }
+
+  async function handleReportUser(event) {
+    event.preventDefault();
+    if (!profile?.id) return;
+
+    const reasonText = reportReasonText.trim();
+
+    if (reportReasonCode === "other" && !reasonText) {
+      showMessage("Укажите текст жалобы.", true);
+      return;
+    }
+
+    try {
+      setReportLoading(true);
+      await reportUser(profile.id, {
+        reasonCode: reportReasonCode,
+        reasonText: reasonText || null,
+      });
+      setReportModalOpen(false);
+      showMessage("Жалоба отправлена. Администрация рассмотрит обращение.");
+    } catch (err) {
+      console.error(err);
+      showMessage(`Не удалось отправить жалобу: ${err.message}`, true);
+    } finally {
+      setReportLoading(false);
+    }
+  }
+
+  async function handleUserBlock() {
+    if (!profile?.id) return;
+
+    const confirmed = window.confirm("Добавить пользователя в черный список?");
+    if (!confirmed) return;
+
+    try {
+      setUserBlockLoading(true);
+      const result = await blockUser(profile.id);
+      setProfile((current) => current
+        ? {
+            ...current,
+            isBlockedByCurrentUser: true,
+            hasBlockedCurrentUser: Boolean(result?.hasBlockedCurrentUser || current.hasBlockedCurrentUser),
+            isInteractionBlocked: true,
+            interactionBlockText: result?.interactionBlockText || "Пользователь находится в черном списке. Профиль и личные сообщения недоступны.",
+            avatarUrl: null,
+            firstName: null,
+            lastName: null,
+            region: null,
+            about: null,
+            entries: [],
+          }
+        : current);
+      setFriendshipStatus(null);
+      setProfileMenuOpen(false);
+      showMessage("Пользователь добавлен в черный список.");
+    } catch (err) {
+      console.error(err);
+      showMessage(`Не удалось добавить пользователя в черный список: ${err.message}`, true);
+    } finally {
+      setUserBlockLoading(false);
+    }
+  }
+
+  async function handleUserUnblock() {
+    if (!profile?.id) return;
+
+    try {
+      setUserBlockLoading(true);
+      const result = await unblockUser(profile.id);
+      setProfile((current) => current
+        ? {
+            ...current,
+            isBlockedByCurrentUser: false,
+            hasBlockedCurrentUser: Boolean(result?.hasBlockedCurrentUser),
+            isInteractionBlocked: Boolean(result?.isInteractionBlocked),
+            interactionBlockText: result?.isInteractionBlocked
+              ? "Профиль недоступен. Пользователь ограничил взаимодействие с вами."
+              : null,
+          }
+        : current);
+      setProfileMenuOpen(false);
+      showMessage("Пользователь удалён из черного списка.");
+    } catch (err) {
+      console.error(err);
+      showMessage(`Не удалось удалить пользователя из черного списка: ${err.message}`, true);
+    } finally {
+      setUserBlockLoading(false);
+    }
+  }
+
+  async function handleAdminDeleteEntry(entry) {
+    if (!entry?.id) return;
+
+    const confirmed = window.confirm("Удалить эту запись как администратор? Действие нельзя отменить.");
+    if (!confirmed) return;
+
+    try {
+      setAdminActionLoading(true);
+      await adminDeleteFishingEntry(entry.id);
+      setProfile((current) => current
+        ? {
+            ...current,
+            entries: (current.entries || []).filter((item) => item.id !== entry.id),
+          }
+        : current);
+      setSelectedEntry((current) => current?.id === entry.id ? null : current);
+      showMessage("Запись удалена администратором.");
+    } catch (err) {
+      console.error(err);
+      showMessage(`Не удалось удалить запись: ${err.message}`, true);
+    } finally {
+      setAdminActionLoading(false);
+    }
+  }
+
+  function openBlockUserModal() {
+    setBlockReasonCode("rules");
+    setBlockReasonText("");
+    setBlockModalOpen(true);
+  }
+
+  async function handleAdminUnblockUser() {
+    if (!profile?.id) return;
+
+    const confirmed = window.confirm("Разблокировать этого пользователя?");
+    if (!confirmed) return;
+
+    try {
+      setAdminActionLoading(true);
+      const result = await adminUnblockUser(profile.id);
+
+      setProfile((current) => current
+        ? {
+            ...current,
+            isBlocked: Boolean(result?.isBlocked),
+            blockReasonCode: null,
+            blockReasonText: null,
+            blockedAtUtc: null,
+          }
+        : current);
+      showMessage("Пользователь разблокирован.");
+    } catch (err) {
+      console.error(err);
+      showMessage(`Не удалось разблокировать пользователя: ${err.message}`, true);
+    } finally {
+      setAdminActionLoading(false);
+    }
+  }
+
+  async function handleAdminBlockUser(event) {
+    event.preventDefault();
+    if (!profile?.id) return;
+
+    const reasonText = blockReasonText.trim();
+
+    if (blockReasonCode === "other" && !reasonText) {
+      showMessage("Укажите текст причины блокировки.", true);
+      return;
+    }
+
+    try {
+      setAdminActionLoading(true);
+      const result = await adminBlockUser(profile.id, {
+        reasonCode: blockReasonCode,
+        reasonText: reasonText || null,
+      });
+
+      setProfile((current) => current
+        ? {
+            ...current,
+            isBlocked: Boolean(result?.isBlocked),
+            blockReasonCode: result?.blockReasonCode || blockReasonCode,
+            blockReasonText: result?.blockReasonText || reasonText,
+            blockedAtUtc: result?.blockedAtUtc || new Date().toISOString(),
+          }
+        : current);
+      setBlockModalOpen(false);
+      showMessage("Пользователь заблокирован.");
+    } catch (err) {
+      console.error(err);
+      showMessage(`Не удалось заблокировать пользователя: ${err.message}`, true);
+    } finally {
+      setAdminActionLoading(false);
+    }
+  }
+
+  function handleAdminToggleBlockUser() {
+    if (!profile?.id) return;
+
+    if (profile.isBlocked) {
+      handleAdminUnblockUser();
+      return;
+    }
+
+    openBlockUserModal();
+  }
+
   function renderFriendButton() {
+    if (profile?.isInteractionBlocked) return null;
     if (!friendshipStatus) return null;
 
     if (friendshipStatus.isFriend) {
@@ -789,6 +1044,97 @@ export default function UserProfilePage() {
   }
 
   const entries = profile.entries || [];
+  const isAdmin = Boolean(user?.isAdmin || user?.IsAdmin);
+
+  if (profile.isBlocked && !isAdmin) {
+    return (
+      <div className="page-container profile-page">
+        <section className="profile-hero card">
+          <div className="profile-cover">
+            <div className="profile-cover-badge">Профиль ограничен</div>
+          </div>
+
+          <div className="profile-main">
+            <div className="profile-avatar profile-avatar-large profile-avatar-placeholder" aria-hidden="true">
+              !
+            </div>
+
+            <div className="profile-info">
+              <p className="profile-kicker">Публичный профиль</p>
+              <h1>Аккаунт заблокирован</h1>
+              <p className="profile-region">Доступ к профилю временно ограничен.</p>
+              <p className="profile-about">
+                Публикации, фото профиля и действия пользователя скрыты.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section className="profile-content-card card">
+          <div className="profile-section-header">
+            <div>
+              <p className="profile-kicker">Статус аккаунта</p>
+              <h2 className="section-title">Аккаунт заблокирован</h2>
+            </div>
+          </div>
+
+          <EmptyState
+            title="Профиль недоступен"
+            text="Доступ к профилю ограничен администрацией сервиса. Публикации и действия пользователя скрыты."
+          />
+        </section>
+      </div>
+    );
+  }
+
+  if (profile.isInteractionBlocked && !isAdmin) {
+    return (
+      <div className="page-container profile-page">
+        <section className="profile-hero card">
+          <div className="profile-cover">
+            <div className="profile-cover-badge">Профиль недоступен</div>
+          </div>
+
+          <div className="profile-main">
+            <Avatar userName="П" avatarUrl={null} size="large" />
+            <div className="profile-info">
+              <p className="profile-kicker">Ограничение доступа</p>
+              <h1>Профиль недоступен</h1>
+              <p className="profile-username">@{profile.userName}</p>
+              <p className="profile-about">{getInteractionBlockText(profile)}</p>
+            </div>
+          </div>
+
+          <div className="profile-actions">
+            {profile.isBlockedByCurrentUser && (
+              <button
+                className="button-secondary"
+                onClick={handleUserUnblock}
+                disabled={userBlockLoading}
+                type="button"
+              >
+                {userBlockLoading ? "Обработка..." : "Убрать из черного списка"}
+              </button>
+            )}
+          </div>
+        </section>
+
+        {message && (
+          <p className={isErrorMessage ? "error-text profile-message" : "success-text profile-message"}>
+            {message}
+          </p>
+        )}
+
+        <section className="profile-content-card card">
+          <EmptyState
+            title="Записи недоступны"
+            text="Публикации пользователя скрыты из-за ограничения взаимодействия."
+          />
+        </section>
+      </div>
+    );
+  }
+
   const presenceStatus = formatPresence(presence);
 
   return (
@@ -810,6 +1156,12 @@ export default function UserProfilePage() {
             <p className="profile-kicker">Публичный профиль</p>
             <h1>{getDisplayName(profile)}</h1>
             <p className="profile-username">@{profile.userName}</p>
+            {profile.isBlocked && (
+              <div style={{ margin: "6px 0 0" }}>
+                <p className="error-text" style={{ margin: 0, fontWeight: 800 }}>Пользователь заблокирован</p>
+                <p className="muted-text" style={{ margin: "4px 0 0" }}>Причина: {getBlockReasonText(profile)}</p>
+              </div>
+            )}
             <p className="profile-region">{profile.region || "Регион не указан"}</p>
             <p className="profile-about">
               {profile.about || "Пользователь пока ничего не рассказал о себе."}
@@ -836,11 +1188,66 @@ export default function UserProfilePage() {
           <button
             className="button-secondary"
             onClick={handleOpenPersonalChat}
-            disabled={chatLoading}
+            disabled={chatLoading || profile.isBlocked || profile.isInteractionBlocked}
             type="button"
           >
             {chatLoading ? "Открываем..." : "Написать"}
           </button>
+          <div style={{ position: "relative" }}>
+            <button
+              className="button-secondary"
+              type="button"
+              onClick={() => setProfileMenuOpen((value) => !value)}
+              aria-label="Действия с профилем"
+            >
+              ⋯
+            </button>
+            {profileMenuOpen && (
+              <div
+                style={{
+                  position: "absolute",
+                  right: 0,
+                  top: "calc(100% + 8px)",
+                  zIndex: 20,
+                  minWidth: 240,
+                  display: "grid",
+                  gap: 6,
+                  padding: 8,
+                  borderRadius: 14,
+                  background: "rgba(15, 23, 42, 0.98)",
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  boxShadow: "0 16px 34px rgba(0,0,0,0.35)",
+                }}
+              >
+                <button className="button-secondary" type="button" onClick={openReportModal}>
+                  Пожаловаться
+                </button>
+                {profile.isBlockedByCurrentUser ? (
+                  <button className="button-secondary" type="button" onClick={handleUserUnblock} disabled={userBlockLoading}>
+                    {userBlockLoading ? "Обработка..." : "Убрать из черного списка"}
+                  </button>
+                ) : (
+                  <button className="button-danger" type="button" onClick={handleUserBlock} disabled={userBlockLoading}>
+                    {userBlockLoading ? "Обработка..." : "Добавить в черный список"}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          {isAdmin && (
+            <button
+              className={profile.isBlocked ? "button-secondary" : "button-danger"}
+              onClick={handleAdminToggleBlockUser}
+              disabled={adminActionLoading}
+              type="button"
+            >
+              {adminActionLoading
+                ? "Обработка..."
+                : profile.isBlocked
+                  ? "Разблокировать"
+                  : "Заблокировать"}
+            </button>
+          )}
         </div>
       </section>
 
@@ -888,10 +1295,12 @@ export default function UserProfilePage() {
                   <EntryCard
                     key={entry.id}
                     entry={entry}
+                    isAdmin={isAdmin}
                     onOpenDetails={setSelectedEntry}
                     onOpenWeather={handleOpenWeather}
                     onOpenMap={handleOpenEntryMap}
                     onOpenFeed={handleOpenEntryInFeed}
+                    onAdminDelete={handleAdminDeleteEntry}
                   />
                 ))}
               </div>
@@ -939,11 +1348,115 @@ export default function UserProfilePage() {
       <EntryDetailsModal
         isOpen={Boolean(selectedEntry)}
         entry={selectedEntry}
+        isAdmin={isAdmin}
         onClose={() => setSelectedEntry(null)}
         onOpenWeather={handleOpenWeather}
         onOpenMap={handleOpenEntryMap}
         onOpenFeed={handleOpenEntryInFeed}
+        onAdminDelete={handleAdminDeleteEntry}
       />
+
+      {reportModalOpen && (
+        <div className="profile-modal-backdrop" onClick={() => !reportLoading && setReportModalOpen(false)}>
+          <form className="profile-modal-card" onSubmit={handleReportUser} onClick={(event) => event.stopPropagation()}>
+            <div className="profile-modal-header">
+              <div>
+                <p className="profile-kicker">Жалоба</p>
+                <h2>Пожаловаться на пользователя</h2>
+              </div>
+              <button className="button-secondary" type="button" onClick={() => setReportModalOpen(false)} disabled={reportLoading}>
+                Закрыть
+              </button>
+            </div>
+
+            <div className="form-grid">
+              <label>
+                Причина
+                <select value={reportReasonCode} onChange={(event) => setReportReasonCode(event.target.value)}>
+                  {ADMIN_BLOCK_REASONS.map((reason) => (
+                    <option key={reason.value} value={reason.value}>{reason.label}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                Комментарий
+                <textarea
+                  value={reportReasonText}
+                  onChange={(event) => setReportReasonText(event.target.value)}
+                  placeholder={reportReasonCode === "other" ? "Опишите причину жалобы" : "Можно добавить пояснение"}
+                  maxLength={1000}
+                  rows={4}
+                />
+              </label>
+
+              <p className="muted-text" style={{ margin: 0 }}>
+                Жалоба будет передана администрации для проверки.
+              </p>
+            </div>
+
+            <div className="button-row" style={{ marginTop: 14 }}>
+              <button type="submit" disabled={reportLoading}>
+                {reportLoading ? "Отправка..." : "Отправить жалобу"}
+              </button>
+              <button className="button-secondary" type="button" onClick={() => setReportModalOpen(false)} disabled={reportLoading}>
+                Отмена
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {blockModalOpen && (
+        <div className="profile-modal-backdrop" onClick={() => !adminActionLoading && setBlockModalOpen(false)}>
+          <form className="profile-modal-card" onSubmit={handleAdminBlockUser} onClick={(event) => event.stopPropagation()}>
+            <div className="profile-modal-header">
+              <div>
+                <p className="profile-kicker">Администрирование</p>
+                <h2>Причина блокировки</h2>
+              </div>
+              <button className="button-secondary" type="button" onClick={() => setBlockModalOpen(false)} disabled={adminActionLoading}>
+                Закрыть
+              </button>
+            </div>
+
+            <div className="form-grid">
+              <label>
+                Причина
+                <select value={blockReasonCode} onChange={(event) => setBlockReasonCode(event.target.value)}>
+                  {ADMIN_BLOCK_REASONS.map((reason) => (
+                    <option key={reason.value} value={reason.value}>{reason.label}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                Другая / дополнительный текст блокировки
+                <textarea
+                  value={blockReasonText}
+                  onChange={(event) => setBlockReasonText(event.target.value)}
+                  placeholder={blockReasonCode === "other" ? "Опишите причину блокировки" : "Можно добавить пояснение для пользователя"}
+                  maxLength={500}
+                  rows={4}
+                />
+              </label>
+
+              <p className="muted-text" style={{ margin: 0 }}>
+                Пользователь увидит эту причину на странице своего профиля.
+              </p>
+            </div>
+
+            <div className="button-row" style={{ marginTop: 14 }}>
+              <button className="button-danger" type="submit" disabled={adminActionLoading}>
+                {adminActionLoading ? "Блокируем..." : "Заблокировать"}
+              </button>
+              <button className="button-secondary" type="button" onClick={() => setBlockModalOpen(false)} disabled={adminActionLoading}>
+                Отмена
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       <AvatarPreviewModal
         isOpen={isAvatarOpen}

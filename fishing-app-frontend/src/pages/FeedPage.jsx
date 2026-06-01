@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import MediaLightbox from "../components/MediaLightbox";
 import {
+  adminDeleteFishingEntry,
   createFishingEntryComment,
   deleteFishingEntryComment,
   getFishingEntryComments,
@@ -469,8 +470,9 @@ function FeedFullscreenMediaViewer({ viewer, onClose }) {
 export default function FeedPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { isAuthenticated, authChecked } = useAuth();
+  const { isAuthenticated, authChecked, user: authUser } = useAuth();
   const isGuest = authChecked && !isAuthenticated;
+  const isAdmin = Boolean(authUser?.isAdmin || authUser?.IsAdmin);
   const openedEntryFromUrlRef = useRef(null);
   const entryRefs = useRef({});
   const feedLoadMoreRef = useRef(null);
@@ -1027,6 +1029,27 @@ export default function FeedPage() {
     navigate(`${WEATHER_PAGE_ROUTE}?${params.toString()}`);
   }
 
+
+  async function handleAdminDeleteEntry(entry) {
+    if (!isAdmin || !entry?.id) return;
+
+    const confirmed = window.confirm(`Удалить запись «${entry.title || "без названия"}» из ленты?`);
+    if (!confirmed) return;
+
+    try {
+      setActionLoading((current) => ({ ...current, [`admin-delete-${entry.id}`]: true }));
+      await adminDeleteFishingEntry(entry.id);
+      setEntries((current) => current.filter((item) => item.id !== entry.id));
+      setDetailEntry((current) => (current?.id === entry.id ? null : current));
+      setToastMessage("Запись удалена администратором.");
+    } catch (err) {
+      console.error(err);
+      setMessage(`Не удалось удалить запись: ${err.message}`);
+    } finally {
+      setActionLoading((current) => ({ ...current, [`admin-delete-${entry.id}`]: false }));
+    }
+  }
+
   function shareEntry(entry) {
     if (isGuest) {
       requestAuth();
@@ -1442,6 +1465,18 @@ export default function FeedPage() {
                     >
                       Поделиться · {sharesCount}
                     </button>
+
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        className="feed-mini-button feed-admin-button"
+                        disabled={Boolean(actionLoading[`admin-delete-${entry.id}`])}
+                        onClick={() => handleAdminDeleteEntry(entry)}
+                        title="Удалить запрещённую запись из ленты"
+                      >
+                        Удалить
+                      </button>
+                    )}
                   </div>
                 </header>
 

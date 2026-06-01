@@ -42,3 +42,54 @@ export function updateNotificationSettings(data) {
     body: JSON.stringify(data),
   });
 }
+
+export function adminBlockUser(userId, data = {}) {
+  const payload = typeof data === "string"
+    ? { reasonCode: data, reasonText: null }
+    : {
+        reasonCode: data.reasonCode || data.reason || null,
+        reasonText: data.reasonText || null,
+      };
+
+  return apiRequest(`/profile/admin/users/${userId}/block`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function adminUnblockUser(userId) {
+  return apiRequest(`/profile/admin/users/${userId}/block`, {
+    method: "DELETE",
+  });
+}
+
+
+export function submitBlockAppeal(message) {
+  return apiRequest("/profile/block-appeal", {
+    method: "POST",
+    body: JSON.stringify({ message }),
+  });
+}
+
+
+export function reportUser(userId, data = {}) {
+  return apiRequest(`/profile/${userId}/report`, {
+    method: "POST",
+    body: JSON.stringify({
+      reasonCode: data.reasonCode || data.reason || null,
+      reasonText: data.reasonText || null,
+    }),
+  });
+}
+
+export function blockUser(userId) {
+  return apiRequest(`/profile/${userId}/block`, {
+    method: "POST",
+  });
+}
+
+export function unblockUser(userId) {
+  return apiRequest(`/profile/${userId}/block`, {
+    method: "DELETE",
+  });
+}

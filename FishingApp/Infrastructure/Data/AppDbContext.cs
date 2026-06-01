@@ -31,6 +31,8 @@ public class AppDbContext : IdentityDbContext<AppUser, Microsoft.AspNetCore.Iden
     public DbSet<FishingEntryComment> FishingEntryComments => Set<FishingEntryComment>();
     public DbSet<FishingEntryShare> FishingEntryShares => Set<FishingEntryShare>();
     public DbSet<VerificationCode> VerificationCodes => Set<VerificationCode>();
+    public DbSet<UserBlock> UserBlocks => Set<UserBlock>();
+    public DbSet<UserReport> UserReports => Set<UserReport>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -53,6 +55,8 @@ public class AppDbContext : IdentityDbContext<AppUser, Microsoft.AspNetCore.Iden
         ConfigureChatMessageAttachments(builder);
         ConfigureVoiceMessageListenStates(builder);
         ConfigureVerificationCodes(builder);
+        ConfigureUserBlocks(builder);
+        ConfigureUserReports(builder);
         builder.Entity<ChatParticipant>()
             .Property(x => x.Status)
             .HasDefaultValue(ChatParticipantStatus.Active);
@@ -218,6 +222,11 @@ public class AppDbContext : IdentityDbContext<AppUser, Microsoft.AspNetCore.Iden
 
             entity.Property(x => x.Region)
                 .HasMaxLength(100);
+
+            entity.Property(x => x.IsPublic)
+                .HasDefaultValue(false);
+
+            entity.HasIndex(x => x.IsPublic);
 
             entity.HasOne(x => x.CreatedByUser)
                 .WithMany(x => x.CreatedPoints)
@@ -588,6 +597,65 @@ public class AppDbContext : IdentityDbContext<AppUser, Microsoft.AspNetCore.Iden
             entity.HasIndex(x => new { x.RequesterId, x.AddresseeId }).IsUnique();
         });
     }
+    private static void ConfigureUserBlocks(ModelBuilder builder)
+    {
+        builder.Entity<UserBlock>(entity =>
+        {
+            entity.ToTable("UserBlocks");
+
+            entity.HasKey(x => x.Id);
+
+            entity.HasIndex(x => new { x.BlockerUserId, x.BlockedUserId })
+                .IsUnique();
+
+            entity.HasIndex(x => x.BlockedUserId);
+
+            entity.HasOne(x => x.BlockerUser)
+                .WithMany(x => x.CreatedUserBlocks)
+                .HasForeignKey(x => x.BlockerUserId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(x => x.BlockedUser)
+                .WithMany(x => x.ReceivedUserBlocks)
+                .HasForeignKey(x => x.BlockedUserId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+    }
+
+    private static void ConfigureUserReports(ModelBuilder builder)
+    {
+        builder.Entity<UserReport>(entity =>
+        {
+            entity.ToTable("UserReports");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.ReasonCode)
+                .IsRequired()
+                .HasMaxLength(50);
+
+            entity.Property(x => x.ReasonText)
+                .HasMaxLength(1000);
+
+            entity.Property(x => x.Status)
+                .IsRequired()
+                .HasMaxLength(50);
+
+            entity.HasIndex(x => new { x.TargetUserId, x.CreatedAtUtc });
+            entity.HasIndex(x => new { x.ReporterUserId, x.CreatedAtUtc });
+
+            entity.HasOne(x => x.ReporterUser)
+                .WithMany(x => x.SentUserReports)
+                .HasForeignKey(x => x.ReporterUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(x => x.TargetUser)
+                .WithMany(x => x.ReceivedUserReports)
+                .HasForeignKey(x => x.TargetUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+    }
+
     private static void ConfigureVerificationCodes(ModelBuilder builder)
     {
         builder.Entity<VerificationCode>(entity =>

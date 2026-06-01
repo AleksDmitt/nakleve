@@ -11,6 +11,10 @@ public class AppUser : IdentityUser<Guid>
     public string? Region { get; set; }
     public string? About { get; set; }
     public bool IsBlocked { get; set; } = false;
+    public string? BlockReasonCode { get; set; }
+    public string? BlockReasonText { get; set; }
+    public DateTime? BlockedAtUtc { get; set; }
+    public Guid? BlockedByUserId { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? LastSeenAtUtc { get; set; }
 
@@ -46,4 +50,9 @@ public class AppUser : IdentityUser<Guid>
     public ICollection<Friendship> ReceivedFriendRequests { get; set; } = new List<Friendship>();
     public ICollection<ChatParticipant> ChatParticipants { get; set; } = new List<ChatParticipant>();
     public ICollection<ChatReadState> ChatReadStates { get; set; } = new List<ChatReadState>();
+
+    public ICollection<UserBlock> CreatedUserBlocks { get; set; } = new List<UserBlock>();
+    public ICollection<UserBlock> ReceivedUserBlocks { get; set; } = new List<UserBlock>();
+    public ICollection<UserReport> SentUserReports { get; set; } = new List<UserReport>();
+    public ICollection<UserReport> ReceivedUserReports { get; set; } = new List<UserReport>();
 }

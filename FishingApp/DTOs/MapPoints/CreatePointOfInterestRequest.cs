@@ -11,4 +11,5 @@ public class CreatePointOfInterestRequest
     public PointType Type { get; set; }
     public string? Region { get; set; }
     public bool IsVisibleOnMap { get; set; } = true;
+    public bool IsPublic { get; set; } = false;
 }

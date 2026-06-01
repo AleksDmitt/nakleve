@@ -45,6 +45,12 @@ export function deleteFishingEntry(id) {
   });
 }
 
+export function adminDeleteFishingEntry(id) {
+  return apiRequest(`/FishingEntries/${id}/admin`, {
+    method: "DELETE",
+  });
+}
+
 export function toggleFishingEntryLike(id) {
   return apiRequest(`/FishingEntries/${id}/like`, {
     method: "POST",

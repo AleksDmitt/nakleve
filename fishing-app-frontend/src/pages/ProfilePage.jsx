@@ -10,6 +10,7 @@ import {
   updateNotificationSettings,
   requestPasswordChangeCode,
   changePasswordWithCode,
+  submitBlockAppeal,
 } from "../api/profileApi";
 import {
   createFishingEntry,
@@ -96,6 +97,7 @@ const COMPANION_RESPONSE_STATUS_LABELS = {
 };
 
 const ENTRY_DRAFT_KEY = "fishingapp.entryDraft.v1";
+const SUPPORT_EMAIL = "rassokha.lesha@yandex.ru";
 
 function getFeedEntryPath(entryId) {
   const params = new URLSearchParams({ entryId });
@@ -178,6 +180,10 @@ function getDisplayName(user) {
   const fullName = `${user.firstName || ""} ${user.lastName || ""}`.trim();
 
   return user.displayName || fullName || user.userName || "Пользователь";
+}
+
+function getBlockReasonText(profile) {
+  return profile?.blockReasonText || profile?.BlockReasonText || "Нарушение правил сервиса";
 }
 
 function toLocalDateInput(value) {
@@ -2838,6 +2844,9 @@ export default function ProfilePage() {
   const [form, setForm] = useState({ firstName: "", lastName: "", userName: "", region: "", about: "", avatarUrl: "" });
   const [message, setMessage] = useState("");
   const [isErrorMessage, setIsErrorMessage] = useState(false);
+  const [blockAppealText, setBlockAppealText] = useState("");
+  const [blockAppealSending, setBlockAppealSending] = useState(false);
+  const [blockAppealSent, setBlockAppealSent] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [saving, setSaving] = useState(false);
   const [notificationSaving, setNotificationSaving] = useState(false);
@@ -2864,6 +2873,12 @@ export default function ProfilePage() {
     return entries;
   }, [entries, entryFilter, privateEntries, publicProfileEntries, publishedEntries]);
 
+  useEffect(() => {
+    if (profile?.blockAppealSubmitted || profile?.BlockAppealSubmitted) {
+      setBlockAppealSent(true);
+    }
+  }, [profile?.blockAppealSubmitted, profile?.BlockAppealSubmitted]);
+
   const companionPendingCount = useMemo(() => {
     return companionRequests
       .filter((request) => normalizeStatus(request.status) === "open")
@@ -2873,6 +2888,29 @@ export default function ProfilePage() {
   function showMessage(text, isError = false) {
     setMessage(text);
     setIsErrorMessage(isError);
+  }
+
+  async function handleSubmitBlockAppeal(event) {
+    event.preventDefault();
+
+    const text = blockAppealText.trim();
+    if (!text) {
+      showMessage("Укажите текст обращения.", true);
+      return;
+    }
+
+    try {
+      setBlockAppealSending(true);
+      const result = await submitBlockAppeal(text);
+      setBlockAppealText("");
+      setBlockAppealSent(true);
+      showMessage(result?.message || "Обращение отправлено. Ожидайте решения администрации.");
+    } catch (err) {
+      console.error(err);
+      showMessage(`Не удалось отправить обращение: ${err.message}`, true);
+    } finally {
+      setBlockAppealSending(false);
+    }
   }
 
   async function loadFriendsData() {
@@ -2926,11 +2964,10 @@ export default function ProfilePage() {
   useEffect(() => {
     async function loadData() {
       try {
-        const [profileData, entriesData] = await Promise.all([getProfile(), getFishingEntries()]);
+        const profileData = await getProfile();
 
         setProfile(profileData);
         setUser(profileData);
-        setEntries(entriesData);
         setForm({
           firstName: profileData.firstName || "",
           lastName: profileData.lastName || "",
@@ -2940,6 +2977,15 @@ export default function ProfilePage() {
           avatarUrl: profileData.avatarUrl || "",
         });
 
+        if (profileData.isBlocked) {
+          setEntries([]);
+          setFriends([]);
+          setRequests([]);
+          return;
+        }
+
+        const entriesData = await getFishingEntries();
+        setEntries(entriesData);
         await loadFriendsData();
       } catch (err) {
         console.error(err);
@@ -2951,6 +2997,7 @@ export default function ProfilePage() {
   }, [setUser]);
 
   useEffect(() => {
+    if (profile?.isBlocked) return undefined;
     if (!profile?.id && !profile?.userId) return undefined;
 
     loadCompanionRequests(true);
@@ -2960,7 +3007,7 @@ export default function ProfilePage() {
     }, 20000);
 
     return () => window.clearInterval(intervalId);
-  }, [profile?.id, profile?.userId, loadCompanionRequests]);
+  }, [profile?.id, profile?.userId, profile?.isBlocked, loadCompanionRequests]);
 
   useEffect(() => {
     if (!message) return;
@@ -3564,6 +3611,113 @@ export default function ProfilePage() {
 
   if (!profile) {
     return <p className="muted-text">Загрузка профиля...</p>;
+  }
+
+  if (profile.isBlocked) {
+    return (
+      <div className="page-container profile-page">
+        <section className="profile-hero card">
+          <div className="profile-cover">
+            <span className="profile-cover-badge">Профиль ограничен</span>
+          </div>
+
+          <div className="profile-main">
+            <div className="profile-avatar profile-avatar-large profile-avatar-placeholder" aria-hidden="true">
+              !
+            </div>
+
+            <div className="profile-info">
+              <p className="profile-kicker">Мой профиль</p>
+              <h1>Аккаунт заблокирован</h1>
+              <p className="profile-region">Доступ к приложению временно ограничен.</p>
+              <p className="profile-about">
+                Публикации, фото профиля и действия в приложении скрыты до решения администрации.
+              </p>
+            </div>
+          </div>
+
+          <div className="profile-actions">
+            <button className="profile-form-ghost-button" onClick={handleLogout} type="button">
+              Выйти
+            </button>
+          </div>
+        </section>
+
+        <section className="card profile-content-card">
+          <div className="profile-section-header">
+            <div>
+              <p className="profile-kicker">Статус аккаунта</p>
+              <h2 className="section-title">Вы были заблокированы</h2>
+            </div>
+          </div>
+
+          <div className="profile-info-grid">
+            <div className="profile-info-item profile-info-item-wide">
+              <span>Причина блокировки</span>
+              <strong>{getBlockReasonText(profile)}</strong>
+            </div>
+
+            {profile.blockedAtUtc && (
+              <div className="profile-info-item">
+                <span>Дата блокировки</span>
+                <strong>{formatDate(profile.blockedAtUtc)}</strong>
+              </div>
+            )}
+
+            <div className="profile-info-item profile-info-item-wide">
+              <span>Связь с поддержкой</span>
+              <strong>{SUPPORT_EMAIL}</strong>
+            </div>
+          </div>
+        </section>
+
+        <section className="card profile-content-card">
+          <div className="profile-section-header">
+            <div>
+              <p className="profile-kicker">Обращение</p>
+              <h2 className="section-title">Обжалование блокировки</h2>
+            </div>
+          </div>
+
+          {blockAppealSent ? (
+            <div className="profile-info-grid">
+              <div className="profile-info-item profile-info-item-wide">
+                <span>Статус обращения</span>
+                <strong>Обращение уже отправлено. Ожидайте решения администрации.</strong>
+              </div>
+            </div>
+          ) : (
+            <form className="form-grid" onSubmit={handleSubmitBlockAppeal}>
+              <p className="muted-text" style={{ margin: 0 }}>
+                Если вы считаете блокировку ошибочной, отправьте обращение администрации. Опишите обстоятельства нарушения и причину пересмотра решения.
+              </p>
+
+              <label>
+                Текст обращения
+                <textarea
+                  value={blockAppealText}
+                  onChange={(event) => setBlockAppealText(event.target.value)}
+                  placeholder="Текст обращения"
+                  maxLength={2000}
+                  rows={5}
+                  disabled={blockAppealSending}
+                />
+              </label>
+
+              <div className="button-row">
+                <button type="submit" disabled={blockAppealSending}>
+                  {blockAppealSending ? "Отправка..." : "Отправить обращение"}
+                </button>
+              </div>
+            </form>
+          )}
+        </section>
+
+        {message && (
+          <p className={`profile-message ${isErrorMessage ? "error-text" : "success-text"}`}>{message}</p>
+        )}
+      </div>
+    );
   }
 
   return (

@@ -13,6 +13,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using System.Security.Claims;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -98,6 +99,24 @@ builder.Services
                 }
 
                 return Task.CompletedTask;
+            },
+            OnTokenValidated = async context =>
+            {
+                var userIdClaim = context.Principal?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+                if (string.IsNullOrWhiteSpace(userIdClaim) || !Guid.TryParse(userIdClaim, out var userId))
+                {
+                    context.Fail("Некорректный токен пользователя.");
+                    return;
+                }
+
+                var userManager = context.HttpContext.RequestServices.GetRequiredService<UserManager<AppUser>>();
+                var user = await userManager.FindByIdAsync(userId.ToString());
+
+                if (user == null)
+                {
+                    context.Fail("Пользователь не найден.");
+                }
             }
         };
     });
@@ -222,6 +241,55 @@ app.UseCors("FrontendPolicy");
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.Use(async (context, next) =>
+{
+    if (context.User?.Identity?.IsAuthenticated == true)
+    {
+        var userIdValue = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+        if (Guid.TryParse(userIdValue, out var userId))
+        {
+            var path = context.Request.Path;
+            var method = context.Request.Method;
+
+            var pathValue = path.Value ?? string.Empty;
+            var isOwnProfileEndpoint =
+                string.Equals(pathValue.TrimEnd('/'), "/api/Profile", StringComparison.OrdinalIgnoreCase);
+
+            var isBlockAppealEndpoint =
+                string.Equals(pathValue.TrimEnd('/'), "/api/Profile/block-appeal", StringComparison.OrdinalIgnoreCase);
+
+            var isAllowedForBlockedUser =
+                path.StartsWithSegments("/api/Auth/me") ||
+                (isOwnProfileEndpoint && HttpMethods.IsGet(method)) ||
+                (isBlockAppealEndpoint && HttpMethods.IsPost(method));
+
+            if (!isAllowedForBlockedUser && path.StartsWithSegments("/api"))
+            {
+                var userManager = context.RequestServices.GetRequiredService<UserManager<AppUser>>();
+                var currentUser = await userManager.FindByIdAsync(userId.ToString());
+
+                if (currentUser?.IsBlocked == true)
+                {
+                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    context.Response.ContentType = "application/json; charset=utf-8";
+                    await context.Response.WriteAsJsonAsync(new
+                    {
+                        message = "Аккаунт заблокирован.",
+                        isBlocked = true,
+                        blockReasonCode = currentUser.BlockReasonCode,
+                        blockReasonText = currentUser.BlockReasonText,
+                        blockedAtUtc = currentUser.BlockedAtUtc
+                    });
+                    return;
+                }
+            }
+        }
+    }
+
+    await next();
+});
 
 app.MapControllers();
 app.MapHub<ChatHub>("/hubs/chat");

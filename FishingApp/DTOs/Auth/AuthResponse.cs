@@ -9,6 +9,11 @@ public class AuthResponse
     public string DisplayName { get; set; } = null!;
     public string Email { get; set; } = null!;
     public bool EmailConfirmed { get; set; }
+    public bool IsAdmin { get; set; }
+    public bool IsBlocked { get; set; }
+    public string? BlockReasonCode { get; set; }
+    public string? BlockReasonText { get; set; }
+    public DateTime? BlockedAtUtc { get; set; }
 
     public bool UserAgreementAccepted { get; set; }
     public string? UserAgreementVersion { get; set; }

@@ -145,6 +145,30 @@ public class ChatsController : ControllerBase
             .FirstOrDefaultAsync(x => x.ChatId == chatId && x.UserId == userId);
     }
 
+    private async Task<bool> IsPrivateCommunicationBlockedAsync(Guid firstUserId, Guid secondUserId)
+    {
+        return await _context.UserBlocks.AnyAsync(x =>
+            (x.BlockerUserId == firstUserId && x.BlockedUserId == secondUserId) ||
+            (x.BlockerUserId == secondUserId && x.BlockedUserId == firstUserId));
+    }
+
+    private async Task<AppUser?> GetBlockedPrivateChatTargetAsync(Chat chat, Guid currentUserId)
+    {
+        if (chat.Type != ChatType.Private)
+            return null;
+
+        var otherUserId = chat.FirstUserId == currentUserId
+            ? chat.SecondUserId
+            : chat.FirstUserId;
+
+        if (!otherUserId.HasValue)
+            return null;
+
+        return await _context.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == otherUserId.Value && x.IsBlocked);
+    }
+
     private async Task<bool> HasAccessToChatAsync(Chat chat, Guid userId)
     {
         if (chat.Type == ChatType.Global)
@@ -758,13 +782,30 @@ public class ChatsController : ControllerBase
             .OrderByDescending(x => x.CreatedAt)
             .ToListAsync();
 
+        var blockedPrivateChatUserIds = await _context.UserBlocks
+            .Where(x => x.BlockerUserId == currentUserId.Value || x.BlockedUserId == currentUserId.Value)
+            .Select(x => x.BlockerUserId == currentUserId.Value ? x.BlockedUserId : x.BlockerUserId)
+            .ToListAsync();
+
         var result = new List<ChatResponse>();
 
         foreach (var chat in chats)
         {
+            if (chat.Type == ChatType.Private)
+            {
+                var otherPrivateUserId = chat.FirstUserId == currentUserId.Value
+                    ? chat.SecondUserId
+                    : chat.FirstUserId;
+
+                if (otherPrivateUserId.HasValue && blockedPrivateChatUserIds.Contains(otherPrivateUserId.Value))
+                    continue;
+            }
+
             var chatName = chat.Name;
             Guid? targetUserId = null;
             string? targetUserAvatarUrl = null;
+            var isTargetUserBlocked = false;
+            string? targetUserBlockedText = null;
             var isMuted = false;
 
             DateTime? clearedAt = null;
@@ -797,7 +838,9 @@ public class ChatsController : ControllerBase
                     if (otherUser != null)
                     {
                         targetUserId = otherUser.Id;
-                        targetUserAvatarUrl = otherUser.AvatarUrl;
+                        isTargetUserBlocked = otherUser.IsBlocked;
+                        targetUserBlockedText = otherUser.IsBlocked ? "Аккаунт пользователя заблокирован" : null;
+                        targetUserAvatarUrl = otherUser.IsBlocked ? null : otherUser.AvatarUrl;
                         chatName = GetDisplayName(otherUser);
                     }
                     else
@@ -979,6 +1022,13 @@ public class ChatsController : ControllerBase
                 }
             }
 
+            if (chat.Type == ChatType.Private && isTargetUserBlocked)
+            {
+                lastMessageText = "Аккаунт пользователя заблокирован";
+                lastMessageUserName = null;
+                unreadCount = 0;
+            }
+
             result.Add(new ChatResponse
             {
                 Id = chat.Id,
@@ -988,6 +1038,8 @@ public class ChatsController : ControllerBase
                 CreatedAt = chat.CreatedAt,
                 TargetUserId = targetUserId,
                 TargetUserAvatarUrl = targetUserAvatarUrl,
+                IsTargetUserBlocked = isTargetUserBlocked,
+                TargetUserBlockedText = targetUserBlockedText,
                 LastMessageText = lastMessageText,
                 LastMessageSentAt = lastMessageSentAt,
                 LastMessageUserName = lastMessageUserName,
@@ -1479,6 +1531,19 @@ public class ChatsController : ControllerBase
         if (!hasAccess)
             return Forbid();
 
+        if (chat.Type == ChatType.Private)
+        {
+            var otherUserId = chat.FirstUserId == userId.Value
+                ? chat.SecondUserId
+                : chat.FirstUserId;
+
+            if (otherUserId.HasValue && await IsPrivateCommunicationBlockedAsync(userId.Value, otherUserId.Value))
+                return BadRequest(new { message = "Личные сообщения недоступны." });
+
+            if (otherUserId.HasValue && await _context.Users.AnyAsync(x => x.Id == otherUserId.Value && x.IsBlocked))
+                return BadRequest(new { message = "Аккаунт пользователя заблокирован. Отправка сообщений недоступна." });
+        }
+
         if (chat.Type == ChatType.Group)
         {
             var participant = await _context.ChatParticipants
@@ -1816,8 +1881,11 @@ public class ChatsController : ControllerBase
             return BadRequest(new { message = "Нельзя создать личный чат с самим собой." });
 
         var targetUser = await _context.Users.FirstOrDefaultAsync(x => x.Id == userId);
-        if (targetUser == null)
+        if (targetUser == null || targetUser.IsBlocked)
             return NotFound(new { message = "Пользователь не найден." });
+
+        if (await IsPrivateCommunicationBlockedAsync(currentUserId.Value, userId))
+            return BadRequest(new { message = "Личные сообщения недоступны." });
 
         var firstId = currentUserId.Value.CompareTo(userId) < 0 ? currentUserId.Value : userId;
         var secondId = currentUserId.Value.CompareTo(userId) < 0 ? userId : currentUserId.Value;
@@ -2691,6 +2759,29 @@ public class ChatsController : ControllerBase
             if (recipientIds.Count == 0)
                 return new List<ChatNotificationRecipient>();
 
+            var blockedRecipientIds = await _context.Users
+                .Where(x => recipientIds.Contains(x.Id) && x.IsBlocked)
+                .Select(x => x.Id)
+                .ToListAsync();
+
+            var interactionBlockedRecipientIds = await _context.UserBlocks
+                .Where(x =>
+                    (recipientIds.Contains(x.BlockerUserId) && x.BlockedUserId == senderUserId) ||
+                    (recipientIds.Contains(x.BlockedUserId) && x.BlockerUserId == senderUserId))
+                .Select(x => x.BlockerUserId == senderUserId ? x.BlockedUserId : x.BlockerUserId)
+                .ToListAsync();
+
+            var blockedSet = blockedRecipientIds
+                .Concat(interactionBlockedRecipientIds)
+                .ToHashSet();
+
+            recipientIds = recipientIds
+                .Where(x => !blockedSet.Contains(x))
+                .ToList();
+
+            if (recipientIds.Count == 0)
+                return new List<ChatNotificationRecipient>();
+
             var mutedUserIds = await _context.PrivateChatUserStates
                 .Where(x => x.ChatId == chatId && recipientIds.Contains(x.UserId) && x.IsMuted)
                 .Select(x => x.UserId)
@@ -2709,7 +2800,8 @@ public class ChatsController : ControllerBase
                 .Where(x =>
                     x.ChatId == chatId &&
                     x.UserId != senderUserId &&
-                    x.Status == ChatParticipantStatus.Active)
+                    x.Status == ChatParticipantStatus.Active &&
+                    !x.User.IsBlocked)
                 .Select(x => new ChatNotificationRecipient(x.UserId, x.IsMuted))
                 .ToListAsync();
         }

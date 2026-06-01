@@ -18,6 +18,7 @@ public class PointOfInterest
 
     public bool IsApproved { get; set; } = false;
     public bool IsVisibleOnMap { get; set; } = true;
+    public bool IsPublic { get; set; } = false;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public AppUser CreatedByUser { get; set; } = null!;

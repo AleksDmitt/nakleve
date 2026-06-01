@@ -12,6 +12,11 @@ public class ProfileResponse
     public string? About { get; set; }
     public string? AvatarUrl { get; set; }
     public DateTime CreatedAt { get; set; }
+    public bool IsBlocked { get; set; }
+    public string? BlockReasonCode { get; set; }
+    public string? BlockReasonText { get; set; }
+    public DateTime? BlockedAtUtc { get; set; }
+    public bool BlockAppealSubmitted { get; set; }
     public bool ChatToastsEnabled { get; set; } = true;
     public bool HideChatMessageTextInNotifications { get; set; } = false;
 }

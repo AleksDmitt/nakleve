@@ -3,6 +3,7 @@ using FishingApp.Api.DTOs;
 using FishingApp.Domain.Entities;
 using FishingApp.Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -14,10 +15,12 @@ namespace FishingApp.Api.Controllers.MapPoints;
 public class MapPointsController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly UserManager<AppUser> _userManager;
 
-    public MapPointsController(AppDbContext context)
+    public MapPointsController(AppDbContext context, UserManager<AppUser> userManager)
     {
         _context = context;
+        _userManager = userManager;
     }
 
     [HttpGet]
@@ -27,11 +30,17 @@ public class MapPointsController : ControllerBase
         if (userId == null)
             return Unauthorized(new { message = "Пользователь не авторизован." });
 
-        var points = await _context.PointsOfInterest
-            .Where(x => x.CreatedByUserId == userId.Value)
-            .OrderByDescending(x => x.CreatedAt)
-            .Select(x => ToResponse(x))
+        var isAdmin = await IsCurrentUserAdminAsync(userId.Value);
+
+        var pointEntities = await _context.PointsOfInterest
+            .Where(x => x.CreatedByUserId == userId.Value || (x.IsPublic && x.IsVisibleOnMap) || (isAdmin && x.IsPublic))
+            .OrderByDescending(x => x.IsPublic)
+            .ThenByDescending(x => x.CreatedAt)
             .ToListAsync();
+
+        var points = pointEntities
+            .Select(x => ToResponse(x, userId.Value, isAdmin))
+            .ToList();
 
         return Ok(points);
     }
@@ -43,15 +52,15 @@ public class MapPointsController : ControllerBase
         if (userId == null)
             return Unauthorized(new { message = "Пользователь не авторизован." });
 
+        var isAdmin = await IsCurrentUserAdminAsync(userId.Value);
+
         var point = await _context.PointsOfInterest
-            .Where(x => x.Id == id && x.CreatedByUserId == userId.Value)
-            .Select(x => ToResponse(x))
-            .FirstOrDefaultAsync();
+            .FirstOrDefaultAsync(x => x.Id == id && (x.CreatedByUserId == userId.Value || (x.IsPublic && x.IsVisibleOnMap) || (isAdmin && x.IsPublic)));
 
         if (point == null)
             return NotFound(new { message = "Точка не найдена." });
 
-        return Ok(point);
+        return Ok(ToResponse(point, userId.Value, isAdmin));
     }
 
     [HttpPost]
@@ -60,6 +69,11 @@ public class MapPointsController : ControllerBase
         var userId = GetCurrentUserId();
         if (userId == null)
             return Unauthorized(new { message = "Пользователь не авторизован." });
+
+        var isAdmin = await IsCurrentUserAdminAsync(userId.Value);
+
+        if (request.IsPublic && !isAdmin)
+            return Forbid();
 
         if (string.IsNullOrWhiteSpace(request.Name))
             return BadRequest(new { message = "Укажите название точки." });
@@ -79,13 +93,14 @@ public class MapPointsController : ControllerBase
             Region = string.IsNullOrWhiteSpace(request.Region) ? null : request.Region.Trim(),
             IsApproved = true,
             IsVisibleOnMap = request.IsVisibleOnMap,
+            IsPublic = isAdmin && request.IsPublic,
             CreatedAt = DateTime.UtcNow
         };
 
         _context.PointsOfInterest.Add(point);
         await _context.SaveChangesAsync();
 
-        return Ok(ToResponse(point));
+        return Ok(ToResponse(point, userId.Value, isAdmin));
     }
 
     [HttpPut("{id:guid}")]
@@ -95,6 +110,11 @@ public class MapPointsController : ControllerBase
         if (userId == null)
             return Unauthorized(new { message = "Пользователь не авторизован." });
 
+        var isAdmin = await IsCurrentUserAdminAsync(userId.Value);
+
+        if (request.IsPublic && !isAdmin)
+            return Forbid();
+
         if (string.IsNullOrWhiteSpace(request.Name))
             return BadRequest(new { message = "Укажите название точки." });
 
@@ -102,7 +122,7 @@ public class MapPointsController : ControllerBase
             return BadRequest(new { message = "Некорректные координаты." });
 
         var point = await _context.PointsOfInterest
-            .FirstOrDefaultAsync(x => x.Id == id && x.CreatedByUserId == userId.Value);
+            .FirstOrDefaultAsync(x => x.Id == id && (x.CreatedByUserId == userId.Value || (isAdmin && x.IsPublic)));
 
         if (point == null)
             return NotFound(new { message = "Точка не найдена." });
@@ -114,10 +134,11 @@ public class MapPointsController : ControllerBase
         point.Type = request.Type;
         point.Region = string.IsNullOrWhiteSpace(request.Region) ? null : request.Region.Trim();
         point.IsVisibleOnMap = request.IsVisibleOnMap;
+        point.IsPublic = isAdmin && request.IsPublic;
 
         await _context.SaveChangesAsync();
 
-        return Ok(ToResponse(point));
+        return Ok(ToResponse(point, userId.Value, isAdmin));
     }
 
     [HttpDelete("{id:guid}")]
@@ -127,8 +148,10 @@ public class MapPointsController : ControllerBase
         if (userId == null)
             return Unauthorized(new { message = "Пользователь не авторизован." });
 
+        var isAdmin = await IsCurrentUserAdminAsync(userId.Value);
+
         var point = await _context.PointsOfInterest
-            .FirstOrDefaultAsync(x => x.Id == id && x.CreatedByUserId == userId.Value);
+            .FirstOrDefaultAsync(x => x.Id == id && (x.CreatedByUserId == userId.Value || (isAdmin && x.IsPublic)));
 
         if (point == null)
             return NotFound(new { message = "Точка не найдена." });
@@ -149,12 +172,18 @@ public class MapPointsController : ControllerBase
         return userId;
     }
 
+    private async Task<bool> IsCurrentUserAdminAsync(Guid userId)
+    {
+        var user = await _userManager.FindByIdAsync(userId.ToString());
+        return user != null && await _userManager.IsInRoleAsync(user, "Admin");
+    }
+
     private static bool IsValidCoordinates(double latitude, double longitude)
     {
         return latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180;
     }
 
-    private static PointOfInterestResponse ToResponse(PointOfInterest x)
+    private static PointOfInterestResponse ToResponse(PointOfInterest x, Guid currentUserId, bool isAdmin)
     {
         return new PointOfInterestResponse
         {
@@ -168,6 +197,8 @@ public class MapPointsController : ControllerBase
             Region = x.Region,
             IsApproved = x.IsApproved,
             IsVisibleOnMap = x.IsVisibleOnMap,
+            IsPublic = x.IsPublic,
+            CanManage = x.CreatedByUserId == currentUserId || (isAdmin && x.IsPublic),
             CreatedAt = x.CreatedAt
         };
     }

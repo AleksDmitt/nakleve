@@ -13,5 +13,13 @@ public class PublicUserProfileResponse
     public string? About { get; set; }
     public string? AvatarUrl { get; set; }
     public DateTime CreatedAt { get; set; }
+    public bool IsBlocked { get; set; }
+    public string? BlockReasonCode { get; set; }
+    public string? BlockReasonText { get; set; }
+    public DateTime? BlockedAtUtc { get; set; }
+    public bool IsBlockedByCurrentUser { get; set; }
+    public bool HasBlockedCurrentUser { get; set; }
+    public bool IsInteractionBlocked { get; set; }
+    public string? InteractionBlockText { get; set; }
     public List<FishingEntryResponse> Entries { get; set; } = new();
 }

@@ -39,6 +39,18 @@ namespace FishingApp.Api.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 
+                    b.Property<string>("BlockReasonCode")
+                        .HasColumnType("text");
+
+                    b.Property<string>("BlockReasonText")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("BlockedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("BlockedByUserId")
+                        .HasColumnType("uuid");
+
                     b.Property<bool>("ChatToastsEnabled")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
@@ -795,6 +807,11 @@ namespace FishingApp.Api.Migrations
                     b.Property<bool>("IsApproved")
                         .HasColumnType("boolean");
 
+                    b.Property<bool>("IsPublic")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
                     b.Property<bool>("IsVisibleOnMap")
                         .HasColumnType("boolean");
 
@@ -819,6 +836,8 @@ namespace FishingApp.Api.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("IsPublic");
 
                     b.ToTable("PointsOfInterest", (string)null);
                 });
@@ -851,6 +870,72 @@ namespace FishingApp.Api.Migrations
                         .IsUnique();
 
                     b.ToTable("PrivateChatUserStates", (string)null);
+                });
+
+            modelBuilder.Entity("FishingApp.Domain.Entities.UserBlock", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BlockedUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BlockerUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BlockedUserId");
+
+                    b.HasIndex("BlockerUserId", "BlockedUserId")
+                        .IsUnique();
+
+                    b.ToTable("UserBlocks", (string)null);
+                });
+
+            modelBuilder.Entity("FishingApp.Domain.Entities.UserReport", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("AdminChatId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("ReasonText")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<Guid>("ReporterUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<Guid>("TargetUserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReporterUserId", "CreatedAtUtc");
+
+                    b.HasIndex("TargetUserId", "CreatedAtUtc");
+
+                    b.ToTable("UserReports", (string)null);
                 });
 
             modelBuilder.Entity("FishingApp.Domain.Entities.VerificationCode", b =>
@@ -1387,6 +1472,44 @@ namespace FishingApp.Api.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("FishingApp.Domain.Entities.UserBlock", b =>
+                {
+                    b.HasOne("FishingApp.Domain.Entities.AppUser", "BlockedUser")
+                        .WithMany("ReceivedUserBlocks")
+                        .HasForeignKey("BlockedUserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("FishingApp.Domain.Entities.AppUser", "BlockerUser")
+                        .WithMany("CreatedUserBlocks")
+                        .HasForeignKey("BlockerUserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("BlockedUser");
+
+                    b.Navigation("BlockerUser");
+                });
+
+            modelBuilder.Entity("FishingApp.Domain.Entities.UserReport", b =>
+                {
+                    b.HasOne("FishingApp.Domain.Entities.AppUser", "ReporterUser")
+                        .WithMany("SentUserReports")
+                        .HasForeignKey("ReporterUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("FishingApp.Domain.Entities.AppUser", "TargetUser")
+                        .WithMany("ReceivedUserReports")
+                        .HasForeignKey("TargetUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("ReporterUser");
+
+                    b.Navigation("TargetUser");
+                });
+
             modelBuilder.Entity("FishingApp.Domain.Entities.VerificationCode", b =>
                 {
                     b.HasOne("FishingApp.Domain.Entities.AppUser", "User")
@@ -1482,13 +1605,21 @@ namespace FishingApp.Api.Migrations
 
                     b.Navigation("CreatedPoints");
 
+                    b.Navigation("CreatedUserBlocks");
+
                     b.Navigation("FishingEntries");
 
                     b.Navigation("ModerationLogs");
 
                     b.Navigation("ReceivedFriendRequests");
 
+                    b.Navigation("ReceivedUserBlocks");
+
+                    b.Navigation("ReceivedUserReports");
+
                     b.Navigation("SentFriendRequests");
+
+                    b.Navigation("SentUserReports");
                 });
 
             modelBuilder.Entity("FishingApp.Domain.Entities.Chat", b =>

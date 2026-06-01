@@ -35,6 +35,13 @@ public class FriendsController : ControllerBase
         return Guid.TryParse(userIdClaim, out var userId) ? userId : null;
     }
 
+    private async Task<bool> HasUserBlockBetweenAsync(Guid firstUserId, Guid secondUserId)
+    {
+        return await _context.UserBlocks.AnyAsync(x =>
+            (x.BlockerUserId == firstUserId && x.BlockedUserId == secondUserId) ||
+            (x.BlockerUserId == secondUserId && x.BlockedUserId == firstUserId));
+    }
+
     [HttpGet("search")]
     public async Task<IActionResult> SearchByUserName([FromQuery] string? userName)
     {
@@ -50,9 +57,15 @@ public class FriendsController : ControllerBase
         if (query.Length < 2)
             return Ok(Array.Empty<FriendUserResponse>());
 
+        var blockedUserIds = await _context.UserBlocks
+            .Where(x => x.BlockerUserId == currentUserId.Value || x.BlockedUserId == currentUserId.Value)
+            .Select(x => x.BlockerUserId == currentUserId.Value ? x.BlockedUserId : x.BlockerUserId)
+            .ToListAsync();
+
         var users = await _context.Users
             .Where(x =>
                 x.Id != currentUserId &&
+                !blockedUserIds.Contains(x.Id) &&
                 !x.IsBlocked &&
                 x.UserName != null &&
                 x.UserName.ToLower().Contains(query))
@@ -94,6 +107,9 @@ public class FriendsController : ControllerBase
         if (!targetUserExists)
             return NotFound(new { message = "Пользователь не найден." });
 
+        if (await HasUserBlockBetweenAsync(currentUserId.Value, userId))
+            return BadRequest(new { message = "Взаимодействие с пользователем ограничено." });
+
         var existingFriendship = await _context.Friendships.FirstOrDefaultAsync(x =>
             (x.RequesterId == currentUserId && x.AddresseeId == userId) ||
             (x.RequesterId == userId && x.AddresseeId == currentUserId));
@@ -132,6 +148,9 @@ public class FriendsController : ControllerBase
 
         if (friendship == null)
             return NotFound(new { message = "Заявка не найдена." });
+
+        if (await HasUserBlockBetweenAsync(friendship.RequesterId, friendship.AddresseeId))
+            return BadRequest(new { message = "Взаимодействие с пользователем ограничено." });
 
         friendship.Status = FriendshipStatus.Accepted;
         await _context.SaveChangesAsync();
@@ -201,18 +220,24 @@ public class FriendsController : ControllerBase
         if (currentUserId == null)
             return Unauthorized(new { message = "Пользователь не авторизован." });
 
+        var blockedUserIds = await _context.UserBlocks
+            .Where(x => x.BlockerUserId == currentUserId.Value || x.BlockedUserId == currentUserId.Value)
+            .Select(x => x.BlockerUserId == currentUserId.Value ? x.BlockedUserId : x.BlockerUserId)
+            .ToListAsync();
+
         var friendships = await _context.Friendships
             .Include(x => x.Requester)
             .Include(x => x.Addressee)
             .Where(x =>
                 x.Status == FriendshipStatus.Accepted &&
-                (x.RequesterId == currentUserId || x.AddresseeId == currentUserId))
+                (x.RequesterId == currentUserId || x.AddresseeId == currentUserId) &&
+                !blockedUserIds.Contains(x.RequesterId == currentUserId.Value ? x.AddresseeId : x.RequesterId))
             .OrderByDescending(x => x.CreatedAt)
             .ToListAsync();
 
         var result = friendships.Select(x =>
         {
-            var friend = x.RequesterId == currentUserId ? x.Addressee : x.Requester;
+            var friend = x.RequesterId == currentUserId.Value ? x.Addressee : x.Requester;
             return ToFriendUserResponse(friend, currentUserId.Value, x);
         }).ToList();
 
@@ -226,9 +251,14 @@ public class FriendsController : ControllerBase
         if (currentUserId == null)
             return Unauthorized(new { message = "Пользователь не авторизован." });
 
+        var blockedUserIds = await _context.UserBlocks
+            .Where(x => x.BlockerUserId == currentUserId.Value || x.BlockedUserId == currentUserId.Value)
+            .Select(x => x.BlockerUserId == currentUserId.Value ? x.BlockedUserId : x.BlockerUserId)
+            .ToListAsync();
+
         var requests = await _context.Friendships
             .Include(x => x.Requester)
-            .Where(x => x.AddresseeId == currentUserId && x.Status == FriendshipStatus.Pending)
+            .Where(x => x.AddresseeId == currentUserId && x.Status == FriendshipStatus.Pending && !blockedUserIds.Contains(x.RequesterId))
             .OrderByDescending(x => x.CreatedAt)
             .Select(x => new FriendRequestResponse
             {
@@ -255,6 +285,17 @@ public class FriendsController : ControllerBase
             return Unauthorized(new { message = "Пользователь не авторизован." });
 
         if (currentUserId == userId)
+        {
+            return Ok(new FriendshipStatusResponse
+            {
+                IsFriend = false,
+                IsIncomingRequest = false,
+                IsOutgoingRequest = false,
+                FriendshipId = null
+            });
+        }
+
+        if (await HasUserBlockBetweenAsync(currentUserId.Value, userId))
         {
             return Ok(new FriendshipStatusResponse
             {

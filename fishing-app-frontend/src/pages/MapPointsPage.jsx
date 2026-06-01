@@ -8,6 +8,7 @@ import {
   updateMapPoint,
 } from "../api/mapPointsApi";
 import { apiRequest } from "../utils/apiClient";
+import { useAuth } from "../context/AuthContext";
 import "../styles/mapPoints.css";
 
 const DEFAULT_CENTER = [55.030878, 82.920179];
@@ -24,6 +25,7 @@ const emptyForm = {
   type: "0",
   region: "",
   isVisibleOnMap: true,
+  isPublic: false,
 };
 
 const pointTypeLabels = {
@@ -48,6 +50,8 @@ function normalizePoint(point) {
   return {
     ...point,
     isVisibleOnMap: point.isVisibleOnMap !== false,
+    isPublic: point.isPublic === true,
+    canManage: point.canManage === true,
   };
 }
 
@@ -127,6 +131,7 @@ function getPointPayload(form) {
     type: Number(form.type),
     region: form.region.trim() || null,
     isVisibleOnMap: Boolean(form.isVisibleOnMap),
+    isPublic: Boolean(form.isPublic),
   };
 }
 
@@ -206,18 +211,24 @@ function PointActionsMenu({ point, onEdit, onToggleVisibility, onDelete, onCreat
 
       {open && (
         <div className="map-point-menu">
-          <button type="button" onClick={() => { setOpen(false); onEdit(point); }}>
-            Изменить
-          </button>
-          <button type="button" onClick={() => { setOpen(false); onToggleVisibility(point); }}>
-            {isVisible ? "Скрыть с карты" : "Показать на карте"}
-          </button>
+          {point.canManage && (
+            <>
+              <button type="button" onClick={() => { setOpen(false); onEdit(point); }}>
+                Изменить
+              </button>
+              <button type="button" onClick={() => { setOpen(false); onToggleVisibility(point); }}>
+                {isVisible ? "Скрыть с карты" : "Показать на карте"}
+              </button>
+            </>
+          )}
           <button type="button" onClick={() => { setOpen(false); onCreateEntry(point); }}>
             Создать запись здесь
           </button>
-          <button type="button" className="danger" onClick={() => { setOpen(false); onDelete(point); }}>
-            Удалить
-          </button>
+          {point.canManage && (
+            <button type="button" className="danger" onClick={() => { setOpen(false); onDelete(point); }}>
+              Удалить
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -226,6 +237,8 @@ function PointActionsMenu({ point, onEdit, onToggleVisibility, onDelete, onCreat
 
 export default function MapPointsPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const isAdmin = Boolean(user?.isAdmin || user?.IsAdmin);
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [points, setPoints] = useState([]);
@@ -269,7 +282,9 @@ export default function MapPointsPage() {
       const matchesVisibility =
         visibilityFilter === "all"
         || (visibilityFilter === "visible" && point.isVisibleOnMap !== false)
-        || (visibilityFilter === "hidden" && point.isVisibleOnMap === false);
+        || (visibilityFilter === "hidden" && point.isVisibleOnMap === false)
+        || (visibilityFilter === "public" && point.isPublic === true)
+        || (visibilityFilter === "private" && point.isPublic !== true);
 
       return matchesQuery && matchesType && matchesVisibility;
     });
@@ -391,6 +406,8 @@ export default function MapPointsPage() {
       type: 0,
       region: "",
       isVisibleOnMap: true,
+      isPublic: false,
+      canManage: true,
       createdAt: null,
     });
 
@@ -405,6 +422,8 @@ export default function MapPointsPage() {
       longitude: lon.toFixed(6),
       type: "0",
       isVisibleOnMap: true,
+      isPublic: false,
+      canManage: true,
     });
     setFormOpen(false);
   }, [searchParams]);
@@ -434,6 +453,8 @@ export default function MapPointsPage() {
       type: Number(type),
       region,
       isVisibleOnMap: true,
+      isPublic: false,
+      canManage: true,
       createdAt: null,
       icon: getPointTypeIcon(type),
     });
@@ -448,6 +469,8 @@ export default function MapPointsPage() {
       type: String(type),
       region: region || "",
       isVisibleOnMap: true,
+      isPublic: false,
+      canManage: true,
     });
     setDraftPoint(nextDraft);
     setExternalPoint(null);
@@ -565,6 +588,7 @@ export default function MapPointsPage() {
       type: String(point.type ?? "0"),
       region: point.region || "",
       isVisibleOnMap: point.isVisibleOnMap !== false,
+      isPublic: point.isPublic === true,
     });
 
     focusMap(point.longitude, point.latitude, POINT_FOCUS_ZOOM);
@@ -652,6 +676,7 @@ export default function MapPointsPage() {
         type: point.type,
         region: point.region || null,
         isVisibleOnMap: point.isVisibleOnMap === false,
+        isPublic: point.isPublic === true,
       };
 
       const updated = normalizePoint(await updateMapPoint(point.id, payload));
@@ -666,17 +691,17 @@ export default function MapPointsPage() {
     <div className="map-points-page">
       <header className="map-points-header">
         <div>
-          <p className="map-points-kicker">Мои места</p>
+          <p className="map-points-kicker">Места на карте</p>
           <h1>Карта рыболова</h1>
           <p>
-            Сохраняй перспективные места, пирсы, магазины и зоны риска. Фильтры управляют и списком, и маркерами на карте.
+            Сохраняй свои места и смотри публичные точки приложения. Фильтры управляют и списком, и маркерами на карте.
           </p>
         </div>
 
         <div className="map-points-header-stats">
           <div>
             <strong>{points.length}</strong>
-            <span>всего точек</span>
+            <span>доступных точек</span>
           </div>
           <div>
             <strong>{visiblePoints.length}</strong>
@@ -805,6 +830,21 @@ export default function MapPointsPage() {
                   </span>
                 </label>
 
+                {isAdmin && (
+                  <label className={`map-points-visibility-card map-points-public-card ${form.isPublic ? "active" : ""}`}>
+                    <input
+                      type="checkbox"
+                      checked={form.isPublic}
+                      onChange={(event) => setForm({ ...form, isPublic: event.target.checked })}
+                    />
+                    <span className="map-points-toggle" />
+                    <span>
+                      <strong>Публичная точка</strong>
+                      <small>Будет видна всем пользователям приложения.</small>
+                    </span>
+                  </label>
+                )}
+
                 <div className="map-points-form-actions">
                   <button type="submit" className="map-points-primary-button" disabled={saving}>
                     {saving ? "Сохранение..." : editingId ? "Сохранить изменения" : "Добавить точку"}
@@ -823,7 +863,7 @@ export default function MapPointsPage() {
         <div className="map-points-list-header">
           <div>
             <p className="map-points-kicker">Список</p>
-            <h2>Сохранённые точки</h2>
+            <h2>Точки</h2>
           </div>
 
           <div className="map-points-filters">
@@ -842,6 +882,8 @@ export default function MapPointsPage() {
               <option value="all">Все точки</option>
               <option value="visible">На карте</option>
               <option value="hidden">Скрытые</option>
+              <option value="public">Публичные</option>
+              <option value="private">Мои личные</option>
             </select>
           </div>
         </div>
@@ -888,6 +930,7 @@ export default function MapPointsPage() {
                   <div className="map-point-meta">
                     <span>{formatDate(point.createdAt)}</span>
                     <span>{isVisible ? "На карте" : "Скрыта"}</span>
+                    <span>{point.isPublic ? "Публичная" : "Личная"}</span>
                   </div>
 
                   <div className="map-point-actions map-point-actions-main">

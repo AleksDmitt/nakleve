@@ -76,7 +76,11 @@ export default function ChatHeader({
   activeTypingUsers = [],
   activeVoiceRecordingUsers = [],
 }) {
-  const safeTargetAvatarUrl = getSafeImageUrl(selectedChat?.targetUserAvatarUrl || selectedChat?.avatarUrl);
+  const isTargetUserBlocked = Boolean(selectedChat?.isTargetUserBlocked || selectedChat?.IsTargetUserBlocked);
+  const targetUserBlockedText = selectedChat?.targetUserBlockedText || selectedChat?.TargetUserBlockedText || "Аккаунт пользователя заблокирован";
+  const safeTargetAvatarUrl = isTargetUserBlocked
+    ? null
+    : getSafeImageUrl(selectedChat?.targetUserAvatarUrl || selectedChat?.avatarUrl);
   const typingText = getTypingText(selectedChat, activeTypingUsers);
   const voiceRecordingText = getVoiceRecordingText(selectedChat, activeVoiceRecordingUsers);
 
@@ -86,7 +90,9 @@ export default function ChatHeader({
       : formatLastSeen(targetUserPresence?.lastSeenAtUtc)
     : null;
 
-  const statusText = voiceRecordingText || typingText || presenceStatusText;
+  const statusText = isTargetUserBlocked
+    ? targetUserBlockedText
+    : voiceRecordingText || typingText || presenceStatusText;
 
   return (
     <div
@@ -247,8 +253,8 @@ export default function ChatHeader({
             className="muted-text"
             style={{
               fontSize: "13px",
-              color: voiceRecordingText || typingText ? "#ffffff" : undefined,
-              fontWeight: voiceRecordingText || typingText ? 700 : undefined,
+              color: isTargetUserBlocked ? "#fca5a5" : voiceRecordingText || typingText ? "#ffffff" : undefined,
+              fontWeight: isTargetUserBlocked || voiceRecordingText || typingText ? 700 : undefined,
             }}
           >
             {statusText}

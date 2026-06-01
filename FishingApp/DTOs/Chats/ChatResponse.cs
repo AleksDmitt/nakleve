@@ -10,6 +10,8 @@ public class ChatResponse
 
     public Guid? TargetUserId { get; set; }
     public string? TargetUserAvatarUrl { get; set; }
+    public bool IsTargetUserBlocked { get; set; }
+    public string? TargetUserBlockedText { get; set; }
     public string? LastMessageText { get; set; }
     public DateTime? LastMessageSentAt { get; set; }
     public string? LastMessageUserName { get; set; }

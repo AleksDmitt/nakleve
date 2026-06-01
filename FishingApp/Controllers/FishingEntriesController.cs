@@ -7,6 +7,7 @@ using FishingApp.Domain.Entities;
 using FishingApp.Domain.Enums;
 using FishingApp.Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
@@ -21,15 +22,18 @@ public class FishingEntriesController : ControllerBase
     private readonly AppDbContext _context;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IHubContext<ChatHub> _chatHub;
+    private readonly UserManager<AppUser> _userManager;
 
     public FishingEntriesController(
         AppDbContext context,
         IHttpClientFactory httpClientFactory,
-        IHubContext<ChatHub> chatHub)
+        IHubContext<ChatHub> chatHub,
+        UserManager<AppUser> userManager)
     {
         _context = context;
         _httpClientFactory = httpClientFactory;
         _chatHub = chatHub;
+        _userManager = userManager;
     }
 
     [HttpGet]
@@ -230,6 +234,31 @@ public class FishingEntriesController : ControllerBase
         return Ok(new { message = "Запись удалена." });
     }
 
+
+
+    [HttpDelete("{id:guid}/admin")]
+    public async Task<IActionResult> AdminDelete(Guid id)
+    {
+        var userIdResult = GetCurrentUserId();
+        if (userIdResult == null)
+            return Unauthorized(new { message = "Пользователь не авторизован." });
+
+        if (!await IsCurrentUserAdminAsync(userIdResult.Value))
+            return Forbid();
+
+        var entry = await _context.FishingEntries
+            .Include(x => x.Media)
+            .FirstOrDefaultAsync(x => x.Id == id);
+
+        if (entry == null)
+            return NotFound(new { message = "Запись не найдена." });
+
+        _context.FishingEntries.Remove(entry);
+        await _context.SaveChangesAsync();
+
+        return Ok(new { message = "Запись удалена администратором." });
+    }
+
     [AllowAnonymous]
     [HttpGet("feed")]
     public async Task<IActionResult> GetFeed(
@@ -249,7 +278,7 @@ public class FishingEntriesController : ControllerBase
         var query = _context.FishingEntries
             .AsNoTracking()
             .Include(x => x.User)
-            .Where(x => x.Visibility == FishingEntryVisibility.PublicProfile && x.IsPublishedToFeed);
+            .Where(x => x.Visibility == FishingEntryVisibility.PublicProfile && x.IsPublishedToFeed && !x.User.IsBlocked);
 
         if (!string.IsNullOrWhiteSpace(region))
         {
@@ -325,7 +354,8 @@ public class FishingEntriesController : ControllerBase
                 .Where(x =>
                     x.Id == entryId.Value &&
                     x.Visibility == FishingEntryVisibility.PublicProfile &&
-                    x.IsPublishedToFeed)
+                    x.IsPublishedToFeed &&
+                    !x.User.IsBlocked)
                 .Select(x => new FishingEntryResponse
                 {
                     Id = x.Id,
@@ -391,7 +421,7 @@ public class FishingEntriesController : ControllerBase
 
         var entry = await _context.FishingEntries
             .AsNoTracking()
-            .Where(x => x.Id == id && x.Visibility == FishingEntryVisibility.PublicProfile && x.IsPublishedToFeed)
+            .Where(x => x.Id == id && x.Visibility == FishingEntryVisibility.PublicProfile && x.IsPublishedToFeed && !x.User.IsBlocked)
             .Select(x => new
             {
                 x.Id,
@@ -458,7 +488,7 @@ public class FishingEntriesController : ControllerBase
 
         var entry = await _context.FishingEntries
             .AsNoTracking()
-            .FirstOrDefaultAsync(x => x.Id == id && x.Visibility == FishingEntryVisibility.PublicProfile && x.IsPublishedToFeed);
+            .FirstOrDefaultAsync(x => x.Id == id && x.Visibility == FishingEntryVisibility.PublicProfile && x.IsPublishedToFeed && !x.User.IsBlocked);
 
         if (entry == null)
             return NotFound(new { message = "Запись не найдена или не опубликована в ленте." });
@@ -503,7 +533,7 @@ public class FishingEntriesController : ControllerBase
 
         var entry = await _context.FishingEntries
             .AsNoTracking()
-            .Where(x => x.Id == id && x.Visibility == FishingEntryVisibility.PublicProfile && x.IsPublishedToFeed)
+            .Where(x => x.Id == id && x.Visibility == FishingEntryVisibility.PublicProfile && x.IsPublishedToFeed && !x.User.IsBlocked)
             .Select(x => new
             {
                 x.Id,
@@ -661,7 +691,7 @@ public class FishingEntriesController : ControllerBase
         var userId = userIdResult.Value;
 
         var entryExists = await _context.FishingEntries
-            .AnyAsync(x => x.Id == id && x.Visibility == FishingEntryVisibility.PublicProfile && x.IsPublishedToFeed);
+            .AnyAsync(x => x.Id == id && x.Visibility == FishingEntryVisibility.PublicProfile && x.IsPublishedToFeed && !x.User.IsBlocked);
 
         if (!entryExists)
             return NotFound(new { message = "Запись не найдена или не опубликована в ленте." });
@@ -727,6 +757,12 @@ public class FishingEntriesController : ControllerBase
     private static DateTime? EnsureUtc(DateTime? value)
     {
         return value.HasValue ? EnsureUtc(value.Value) : null;
+    }
+
+    private async Task<bool> IsCurrentUserAdminAsync(Guid userId)
+    {
+        var user = await _userManager.FindByIdAsync(userId.ToString());
+        return user != null && await _userManager.IsInRoleAsync(user, "Admin");
     }
 
     private Guid? GetCurrentUserId()
