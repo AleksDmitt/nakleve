@@ -225,8 +225,12 @@ public class ChatsController : ControllerBase
         return "Other";
     }
 
-    private static ChatMessageAttachmentResponse MapAttachment(ChatMessageAttachment attachment)
+    private static ChatMessageAttachmentResponse MapAttachment(
+        ChatMessageAttachment attachment,
+        IReadOnlySet<Guid>? listenedVoiceAttachmentIds = null)
     {
+        listenedVoiceAttachmentIds ??= new HashSet<Guid>();
+
         return new ChatMessageAttachmentResponse
         {
             Id = attachment.Id,
@@ -237,7 +241,8 @@ public class ChatsController : ControllerBase
             AttachmentType = attachment.AttachmentType,
             IsVoiceMessage = attachment.IsVoiceMessage,
             VoiceDurationMs = attachment.VoiceDurationMs,
-            VoiceWaveform = attachment.VoiceWaveform
+            VoiceWaveform = attachment.VoiceWaveform,
+            IsVoiceListenedByCurrentUser = attachment.IsVoiceMessage && listenedVoiceAttachmentIds.Contains(attachment.Id)
         };
     }
 
@@ -603,7 +608,7 @@ public class ChatsController : ControllerBase
             IsDeletedForAll = message.IsDeletedForAll,
             IsReadByOthers = false,
             Attachments = attachments
-                .Select(MapAttachment)
+                .Select(attachment => MapAttachment(attachment))
                 .ToList()
         };
     }
@@ -1079,6 +1084,24 @@ public class ChatsController : ControllerBase
             .Include(x => x.Attachments)
             .ToListAsync();
 
+        var voiceAttachmentIds = messageEntities
+            .SelectMany(x => x.Attachments
+                .Where(a => a.IsVoiceMessage && x.UserId != currentUserId.Value)
+                .Select(a => a.Id))
+            .ToList();
+
+        var listenedVoiceAttachmentIdList = voiceAttachmentIds.Count == 0
+            ? new List<Guid>()
+            : await _context.VoiceMessageListenStates
+                .AsNoTracking()
+                .Where(x =>
+                    x.UserId == currentUserId.Value &&
+                    voiceAttachmentIds.Contains(x.ChatMessageAttachmentId))
+                .Select(x => x.ChatMessageAttachmentId)
+                .ToListAsync();
+
+        var listenedVoiceAttachmentIds = listenedVoiceAttachmentIdList.ToHashSet();
+
         var messages = messageEntities
             .Select(x => new ChatMessageResponse
             {
@@ -1110,7 +1133,8 @@ public class ChatsController : ControllerBase
                         AttachmentType = a.AttachmentType,
                         IsVoiceMessage = a.IsVoiceMessage,
                         VoiceDurationMs = a.VoiceDurationMs,
-                        VoiceWaveform = a.VoiceWaveform
+                        VoiceWaveform = a.VoiceWaveform,
+                        IsVoiceListenedByCurrentUser = a.IsVoiceMessage && listenedVoiceAttachmentIds.Contains(a.Id)
                     })
                     .ToList()
             })
@@ -1126,6 +1150,69 @@ public class ChatsController : ControllerBase
         }
 
         return Ok(messages);
+    }
+
+
+    [HttpPost("attachments/{attachmentId:guid}/voice/listened")]
+    public async Task<IActionResult> MarkVoiceMessageAsListened(Guid attachmentId)
+    {
+        var currentUserId = GetCurrentUserId();
+
+        if (currentUserId == null)
+            return Unauthorized(new { message = "Пользователь не авторизован." });
+
+        var attachment = await _context.ChatMessageAttachments
+            .Include(x => x.ChatMessage)
+                .ThenInclude(x => x.Chat)
+            .FirstOrDefaultAsync(x => x.Id == attachmentId);
+
+        if (attachment == null)
+            return NotFound(new { message = "Голосовое сообщение не найдено." });
+
+        if (!attachment.IsVoiceMessage)
+            return BadRequest(new { message = "Вложение не является голосовым сообщением." });
+
+        var chat = attachment.ChatMessage.Chat;
+        var hasAccess = await HasAccessToChatAsync(chat, currentUserId.Value);
+
+        if (!hasAccess)
+            return Forbid();
+
+        if (attachment.ChatMessage.UserId == currentUserId.Value)
+        {
+            return Ok(new
+            {
+                attachmentId,
+                isVoiceListenedByCurrentUser = true,
+                listenedAtUtc = (DateTime?)null
+            });
+        }
+
+        var existingState = await _context.VoiceMessageListenStates
+            .FirstOrDefaultAsync(x =>
+                x.ChatMessageAttachmentId == attachmentId &&
+                x.UserId == currentUserId.Value);
+
+        if (existingState == null)
+        {
+            existingState = new VoiceMessageListenState
+            {
+                Id = Guid.NewGuid(),
+                ChatMessageAttachmentId = attachmentId,
+                UserId = currentUserId.Value,
+                ListenedAtUtc = DateTime.UtcNow
+            };
+
+            _context.VoiceMessageListenStates.Add(existingState);
+            await _context.SaveChangesAsync();
+        }
+
+        return Ok(new
+        {
+            attachmentId,
+            isVoiceListenedByCurrentUser = true,
+            listenedAtUtc = existingState.ListenedAtUtc
+        });
     }
 
     [HttpPost("{chatId:guid}/read-until")]

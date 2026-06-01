@@ -105,6 +105,8 @@ export default function ChatComposer({
   handleSendMessage,
   onTypingActivity,
   onTypingStopped,
+  onVoiceRecordingStarted,
+  onVoiceRecordingStopped,
 }) {
   const composerDisabled = selectedChat?.type === "Group" && !groupCanSend;
   const chatId = selectedChat?.id || null;
@@ -334,6 +336,7 @@ export default function ChatComposer({
       };
 
       recorder.start(250);
+      onVoiceRecordingStarted?.();
 
       recordingTimerRef.current = window.setInterval(() => {
         setRecordingMs(Date.now() - recordingStartedAtRef.current);
@@ -351,6 +354,7 @@ export default function ChatComposer({
       stopRecordingTimer();
       setIsRecordingVoice(false);
       setVoiceLocked(false);
+      onVoiceRecordingStopped?.();
       setRecordingError("Не удалось получить доступ к микрофону.");
     }
   }
@@ -364,6 +368,7 @@ export default function ChatComposer({
       stopRecordingTimer();
       setIsRecordingVoice(false);
       setVoiceLocked(false);
+      onVoiceRecordingStopped?.();
       return;
     }
 
@@ -408,6 +413,7 @@ export default function ChatComposer({
           setIsRecordingVoice(false);
           setVoiceLocked(false);
           setRecordingMs(0);
+          onVoiceRecordingStopped?.();
           resolve();
         }
       };
@@ -528,6 +534,7 @@ export default function ChatComposer({
       stopAfterVoiceStartRef.current = false;
       cleanupRecordingStream();
       stopRecordingTimer();
+      onVoiceRecordingStopped?.();
     };
   }, []);
 
@@ -1189,7 +1196,7 @@ export default function ChatComposer({
           <div className="chat-voice-inline-status" aria-live="polite">
             <span className="chat-voice-inline-status__dot" />
             <span className="chat-voice-inline-status__text">
-              <span className="chat-voice-inline-status__label">{isVoiceLocked ? "Голосовое зафиксировано · " : "Запись голосового · "}</span>
+              <span className="chat-voice-inline-status__label">Записывается голосовое сообщение · </span>
               {formatVoiceDuration(recordingMs)}
             </span>
 

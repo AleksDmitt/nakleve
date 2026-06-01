@@ -28,6 +28,12 @@ export function markChatAsReadUntil(chatId, messageId) {
   });
 }
 
+export function markVoiceMessageAsListened(attachmentId) {
+  return apiRequest(`/Chats/attachments/${attachmentId}/voice/listened`, {
+    method: "POST",
+  });
+}
+
 export function createOrGetPersonalChat(userId) {
   return apiRequest(`/Chats/private/${userId}`, {
     method: "POST",

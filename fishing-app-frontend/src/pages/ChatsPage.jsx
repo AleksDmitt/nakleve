@@ -5,6 +5,7 @@ import {
   sendChatMessage,
   markChatAsRead,
   markChatAsReadUntil,
+  markVoiceMessageAsListened,
   deleteChatMessage,
   uploadChatAttachment,
   deletePrivateChatForMe,
@@ -133,6 +134,7 @@ export default function ChatsPage() {
   );
   const [chatScrollRequest, setChatScrollRequest] = useState(null);
   const [typingUsersByChatId, setTypingUsersByChatId] = useState({});
+  const [voiceRecordingUsersByChatId, setVoiceRecordingUsersByChatId] = useState({});
 
   const currentChatIdRef = useRef(null);
   const urlChatHandledRef = useRef(false);
@@ -154,6 +156,9 @@ export default function ChatsPage() {
   const typingKeepAliveAtRef = useRef(0);
   const currentTypingChatIdRef = useRef(null);
   const typingUserTimersRef = useRef(new Map());
+  const voiceRecordingStartedRef = useRef(false);
+  const currentVoiceRecordingChatIdRef = useRef(null);
+  const voiceRecordingUserTimersRef = useRef(new Map());
 
   const currentDraft = selectedChat?.id ? (drafts[selectedChat.id] ?? "") : "";
   const pendingFiles = selectedChat?.id ? (pendingFilesByChatId[selectedChat.id] ?? []) : [];
@@ -182,6 +187,31 @@ export default function ChatsPage() {
       };
     });
   }, [selectedChat?.id, selectedChat?.name, selectedGroupDetails?.participants, typingUsersByChatId]);
+
+  const activeVoiceRecordingUsers = useMemo(() => {
+    if (!selectedChat?.id) return [];
+
+    const chatId = String(selectedChat.id);
+    const recordingUsers = Object.values(voiceRecordingUsersByChatId[chatId] || {});
+
+    if (recordingUsers.length === 0) return [];
+
+    const participantsById = new Map(
+      (selectedGroupDetails?.participants || []).map((participant) => [
+        String(participant.userId),
+        participant,
+      ])
+    );
+
+    return recordingUsers.map((recordingUser) => {
+      const participant = participantsById.get(String(recordingUser.userId));
+
+      return {
+        ...recordingUser,
+        userName: recordingUser.userName || participant?.userName || selectedChat.name || "Пользователь",
+      };
+    });
+  }, [selectedChat?.id, selectedChat?.name, selectedGroupDetails?.participants, voiceRecordingUsersByChatId]);
 
   function removeTypingUser(chatId, typingUserId) {
     if (!chatId || !typingUserId) return;
@@ -226,6 +256,8 @@ export default function ChatsPage() {
       return;
     }
 
+    removeVoiceRecordingUser(chatId, typingUserId);
+
     setTypingUsersByChatId((prev) => ({
       ...prev,
       [chatId]: {
@@ -249,6 +281,122 @@ export default function ChatsPage() {
     }, 4200);
 
     typingUserTimersRef.current.set(timerKey, timerId);
+  }
+
+  function removeVoiceRecordingUser(chatId, recordingUserId) {
+    if (!chatId || !recordingUserId) return;
+
+    const timerKey = `${chatId}:${recordingUserId}`;
+    const timerId = voiceRecordingUserTimersRef.current.get(timerKey);
+
+    if (timerId) {
+      window.clearTimeout(timerId);
+      voiceRecordingUserTimersRef.current.delete(timerKey);
+    }
+
+    setVoiceRecordingUsersByChatId((prev) => {
+      const currentChatRecordingUsers = prev[chatId];
+      if (!currentChatRecordingUsers?.[recordingUserId]) return prev;
+
+      const nextChatRecordingUsers = { ...currentChatRecordingUsers };
+      delete nextChatRecordingUsers[recordingUserId];
+
+      if (Object.keys(nextChatRecordingUsers).length === 0) {
+        const next = { ...prev };
+        delete next[chatId];
+        return next;
+      }
+
+      return {
+        ...prev,
+        [chatId]: nextChatRecordingUsers,
+      };
+    });
+  }
+
+  function rememberVoiceRecordingUser(payload) {
+    const chatId = payload?.chatId ? String(payload.chatId) : null;
+    const recordingUserId = payload?.userId ? String(payload.userId) : null;
+
+    if (!chatId || !recordingUserId) return;
+    if (recordingUserId === String(user?.id || "")) return;
+
+    if (payload?.isRecording === false) {
+      removeVoiceRecordingUser(chatId, recordingUserId);
+      return;
+    }
+
+    removeTypingUser(chatId, recordingUserId);
+
+    setVoiceRecordingUsersByChatId((prev) => ({
+      ...prev,
+      [chatId]: {
+        ...(prev[chatId] || {}),
+        [recordingUserId]: {
+          userId: recordingUserId,
+          userName: payload?.userName || null,
+          updatedAtUtc: payload?.updatedAtUtc || new Date().toISOString(),
+        },
+      },
+    }));
+
+    const timerKey = `${chatId}:${recordingUserId}`;
+    const previousTimerId = voiceRecordingUserTimersRef.current.get(timerKey);
+    if (previousTimerId) {
+      window.clearTimeout(previousTimerId);
+    }
+
+    const timerId = window.setTimeout(() => {
+      removeVoiceRecordingUser(chatId, recordingUserId);
+    }, 12000);
+
+    voiceRecordingUserTimersRef.current.set(timerKey, timerId);
+  }
+
+  async function sendVoiceRecordingState(chatId, isRecording) {
+    if (!chatId) return;
+
+    const token = getToken();
+    if (!token) return;
+
+    try {
+      const connection = await ensureChatConnectionStarted(token);
+      await connection.invoke("SetVoiceRecording", String(chatId), Boolean(isRecording));
+    } catch (err) {
+      // Если backend еще без SetVoiceRecording, чат не должен ломаться.
+      console.debug("Chat voice recording state was not sent:", err);
+    }
+  }
+
+  function stopVoiceRecordingNow() {
+    if (!voiceRecordingStartedRef.current || !currentVoiceRecordingChatIdRef.current) {
+      return;
+    }
+
+    const chatId = currentVoiceRecordingChatIdRef.current;
+    voiceRecordingStartedRef.current = false;
+    currentVoiceRecordingChatIdRef.current = null;
+
+    sendVoiceRecordingState(chatId, false);
+  }
+
+  function handleComposerVoiceRecordingStarted() {
+    if (!selectedChat?.id) return;
+    if (selectedChat.type === "Group" && !groupCanSend) return;
+
+    const chatId = String(selectedChat.id);
+
+    stopTypingNow();
+    currentVoiceRecordingChatIdRef.current = chatId;
+
+    if (!voiceRecordingStartedRef.current) {
+      voiceRecordingStartedRef.current = true;
+      sendVoiceRecordingState(chatId, true);
+    }
+  }
+
+  function handleComposerVoiceRecordingStopped() {
+    stopVoiceRecordingNow();
   }
 
   async function sendTypingState(chatId, isTyping) {
@@ -363,6 +511,7 @@ export default function ChatsPage() {
 
   function closeActiveChat() {
     stopTypingNow();
+    stopVoiceRecordingNow();
     setSelectedChat(null);
     setMessages([]);
     setReplyTo(null);
@@ -379,8 +528,11 @@ export default function ChatsPage() {
   useEffect(() => {
     return () => {
       stopTypingNow();
+      stopVoiceRecordingNow();
       typingUserTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
       typingUserTimersRef.current.clear();
+      voiceRecordingUserTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
+      voiceRecordingUserTimersRef.current.clear();
     };
   }, []);
 
@@ -777,6 +929,12 @@ export default function ChatsPage() {
       const isCurrentChat = incomingChatId && incomingChatId === String(currentChatIdRef.current || "");
       const isOwnMessage = String(incomingMessage?.userId || "").toLowerCase() === String(user?.id || "").toLowerCase();
 
+      if (incomingChatId && incomingMessage?.userId) {
+        const senderId = String(incomingMessage.userId);
+        removeTypingUser(incomingChatId, senderId);
+        removeVoiceRecordingUser(incomingChatId, senderId);
+      }
+
       if (isCurrentChat) {
         appendMessageUnique(incomingMessage);
       } else if (incomingChatId) {
@@ -874,6 +1032,10 @@ export default function ChatsPage() {
       rememberTypingUser(payload);
     };
 
+    const handleChatVoiceRecordingChanged = (payload) => {
+      rememberVoiceRecordingUser(payload);
+    };
+
     const handleChatReadStateChanged = (payload) => {
       const payloadChatId = payload?.chatId ? String(payload.chatId) : null;
       const readerUserId = payload?.userId ? String(payload.userId) : null;
@@ -933,6 +1095,7 @@ export default function ChatsPage() {
         connection.on("ChatUpdated", handleChatUpdated);
         connection.on("ChatReadStateChanged", handleChatReadStateChanged);
         connection.on("ChatTypingChanged", handleChatTypingChanged);
+        connection.on("ChatVoiceRecordingChanged", handleChatVoiceRecordingChanged);
         connection.onreconnecting(handleReconnecting);
         connection.onreconnected(handleReconnected);
         connection.onclose(handleClose);
@@ -957,6 +1120,7 @@ export default function ChatsPage() {
         connection.off("ChatUpdated", handleChatUpdated);
         connection.off("ChatReadStateChanged", handleChatReadStateChanged);
         connection.off("ChatTypingChanged", handleChatTypingChanged);
+        connection.off("ChatVoiceRecordingChanged", handleChatVoiceRecordingChanged);
         connection.onreconnecting(() => {});
         connection.onreconnected(() => {});
         connection.onclose(() => {});
@@ -977,6 +1141,7 @@ export default function ChatsPage() {
       }
 
       stopTypingNow();
+      stopVoiceRecordingNow();
 
       const nextChatId = selectedChat.id;
       const previousChatId = currentChatIdRef.current;
@@ -1780,6 +1945,33 @@ export default function ChatsPage() {
     }, 0);
   }
 
+
+  async function handleVoiceMessageListened(attachmentId) {
+    if (!attachmentId) return;
+
+    setMessages((prev) =>
+      prev.map((msg) => ({
+        ...msg,
+        attachments: Array.isArray(msg.attachments)
+          ? msg.attachments.map((attachment) =>
+              String(attachment.id) === String(attachmentId)
+                ? {
+                    ...attachment,
+                    isVoiceListenedByCurrentUser: true,
+                  }
+                : attachment
+            )
+          : msg.attachments,
+      }))
+    );
+
+    try {
+      await markVoiceMessageAsListened(attachmentId);
+    } catch (err) {
+      console.error("Не удалось отметить голосовое как прослушанное:", err);
+    }
+  }
+
   async function handleGroupCreated(groupChat) {
     setGroupModalOpen(false);
     await loadChats({ showLoader: false });
@@ -1967,6 +2159,7 @@ export default function ChatsPage() {
                 setSelectedChat={setSelectedChat}
                 targetUserPresence={targetUserPresence}
                 activeTypingUsers={activeTypingUsers}
+                activeVoiceRecordingUsers={activeVoiceRecordingUsers}
               />
 
               {selectedChat.type === "Group" && groupSystemMessage && (
@@ -2004,6 +2197,7 @@ export default function ChatsPage() {
                 messagesEndRef={messagesEndRef}
                 scrollRequest={chatScrollRequest}
                 onVisibleReadBoundary={readSelectedChatUntilMessage}
+                onVoiceMessageListened={handleVoiceMessageListened}
               />
 
               <ChatComposer
@@ -2020,6 +2214,8 @@ export default function ChatsPage() {
                 handleSendMessage={handleSendMessage}
                 onTypingActivity={handleComposerTypingActivity}
                 onTypingStopped={stopTypingNow}
+                onVoiceRecordingStarted={handleComposerVoiceRecordingStarted}
+                onVoiceRecordingStopped={handleComposerVoiceRecordingStopped}
                 pendingFiles={pendingFiles}
                 handleAttachmentSelect={handleAttachmentSelect}
                 handleVoiceRecorded={handleVoiceRecorded}

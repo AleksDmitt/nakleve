@@ -85,6 +85,18 @@ public class ChatHub : Hub
         });
     }
 
+    private async Task SendVoiceRecordingChangedAsync(Guid chatId, Guid userId, bool isRecording)
+    {
+        await Clients.OthersInGroup(GetChatGroupName(chatId)).SendAsync("ChatVoiceRecordingChanged", new
+        {
+            chatId,
+            userId,
+            userName = await GetCurrentUserDisplayNameAsync(userId),
+            isRecording,
+            updatedAtUtc = DateTime.UtcNow
+        });
+    }
+
     public override async Task OnConnectedAsync()
     {
         var userId = GetCurrentUserId();
@@ -194,6 +206,7 @@ public class ChatHub : Hub
         if (userId.HasValue)
         {
             await SendTypingChangedAsync(parsedChatId, userId.Value, false);
+            await SendVoiceRecordingChangedAsync(parsedChatId, userId.Value, false);
         }
     }
 
@@ -211,6 +224,22 @@ public class ChatHub : Hub
             throw new HubException("Нет доступа к этому чату.");
 
         await SendTypingChangedAsync(parsedChatId, userId.Value, isTyping);
+    }
+
+    public async Task SetVoiceRecording(string chatId, bool isRecording)
+    {
+        var userId = GetCurrentUserId();
+        if (userId == null)
+            throw new HubException("Пользователь не авторизован.");
+
+        if (!Guid.TryParse(chatId, out var parsedChatId))
+            throw new HubException("Некорректный идентификатор чата.");
+
+        var hasAccess = await HasAccessToChatAsync(parsedChatId, userId.Value);
+        if (!hasAccess)
+            throw new HubException("Нет доступа к этому чату.");
+
+        await SendVoiceRecordingChangedAsync(parsedChatId, userId.Value, isRecording);
     }
 
     private async Task<bool> HasAccessToChatAsync(Guid chatId, Guid userId)

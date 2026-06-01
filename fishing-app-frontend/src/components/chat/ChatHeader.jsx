@@ -48,6 +48,24 @@ function getTypingText(selectedChat, activeTypingUsers) {
   return "Печатает...";
 }
 
+function getVoiceRecordingText(selectedChat, activeVoiceRecordingUsers) {
+  const users = Array.isArray(activeVoiceRecordingUsers) ? activeVoiceRecordingUsers : [];
+
+  if (users.length === 0) return null;
+
+  if (selectedChat?.type === "Group") {
+    if (users.length === 1) {
+      return `${users[0]?.userName || "Пользователь"} записывает голосовое сообщение...`;
+    }
+
+    return users.length <= 3
+      ? `${users.length} участника записывают голосовое сообщение...`
+      : "Несколько участников записывают голосовое сообщение...";
+  }
+
+  return "Записывает голосовое сообщение...";
+}
+
 export default function ChatHeader({
   selectedChat,
   isConnectionReady,
@@ -56,9 +74,11 @@ export default function ChatHeader({
   setSelectedChat,
   targetUserPresence,
   activeTypingUsers = [],
+  activeVoiceRecordingUsers = [],
 }) {
   const safeTargetAvatarUrl = getSafeImageUrl(selectedChat?.targetUserAvatarUrl || selectedChat?.avatarUrl);
   const typingText = getTypingText(selectedChat, activeTypingUsers);
+  const voiceRecordingText = getVoiceRecordingText(selectedChat, activeVoiceRecordingUsers);
 
   const presenceStatusText = selectedChat?.type === "Private" && selectedChat?.targetUserId
     ? targetUserPresence?.isOnline
@@ -66,7 +86,7 @@ export default function ChatHeader({
       : formatLastSeen(targetUserPresence?.lastSeenAtUtc)
     : null;
 
-  const statusText = typingText || presenceStatusText;
+  const statusText = voiceRecordingText || typingText || presenceStatusText;
 
   return (
     <div
@@ -227,8 +247,8 @@ export default function ChatHeader({
             className="muted-text"
             style={{
               fontSize: "13px",
-              color: typingText ? "#ffffff" : undefined,
-              fontWeight: typingText ? 700 : undefined,
+              color: voiceRecordingText || typingText ? "#ffffff" : undefined,
+              fontWeight: voiceRecordingText || typingText ? 700 : undefined,
             }}
           >
             {statusText}

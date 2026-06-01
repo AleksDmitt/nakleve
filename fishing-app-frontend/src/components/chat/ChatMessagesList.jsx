@@ -405,14 +405,34 @@ function getVoiceWaveformBars(value) {
   });
 }
 
-function VoiceMessageAttachment({ attachment, safeFileUrl, isMine, isDisabled }) {
+function VoiceMessageAttachment({ attachment, safeFileUrl, isMine, isDisabled, onVoiceMessageListened }) {
   const audioRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentMs, setCurrentMs] = useState(0);
   const [durationMs, setDurationMs] = useState(attachment.voiceDurationMs || 0);
+  const [isLocallyListened, setIsLocallyListened] = useState(Boolean(attachment.isVoiceListenedByCurrentUser));
+  const listenReportedRef = useRef(Boolean(attachment.isVoiceListenedByCurrentUser));
   const bars = getVoiceWaveformBars(attachment.voiceWaveform);
   const progress = durationMs > 0 ? Math.min(1, currentMs / durationMs) : 0;
   const activeBars = Math.round(progress * bars.length);
+  const shouldShowUnlistenedDot = !isMine && !isLocallyListened && !isDisabled;
+
+  useEffect(() => {
+    const nextValue = Boolean(attachment.isVoiceListenedByCurrentUser);
+    setIsLocallyListened(nextValue);
+    listenReportedRef.current = nextValue;
+  }, [attachment.isVoiceListenedByCurrentUser, attachment.id]);
+
+  function markVoiceAsListenedOnce() {
+    if (isMine || isDisabled || listenReportedRef.current || !attachment.id) return;
+
+    listenReportedRef.current = true;
+    setIsLocallyListened(true);
+
+    if (typeof onVoiceMessageListened === "function") {
+      onVoiceMessageListened(attachment.id);
+    }
+  }
 
   function togglePlayback(event) {
     event.stopPropagation();
@@ -431,6 +451,7 @@ function VoiceMessageAttachment({ attachment, safeFileUrl, isMine, isDisabled })
   return (
     <div
       style={{
+        position: "relative",
         width: "min(100%, 360px)",
         display: "grid",
         gridTemplateColumns: "42px minmax(0, 1fr) auto",
@@ -504,6 +525,24 @@ function VoiceMessageAttachment({ attachment, safeFileUrl, isMine, isDisabled })
         {formatVoiceDuration(durationMs || attachment.voiceDurationMs)}
       </div>
 
+      {shouldShowUnlistenedDot && (
+        <span
+          title="Голосовое не прослушано"
+          aria-label="Голосовое не прослушано"
+          style={{
+            position: "absolute",
+            top: "7px",
+            right: "7px",
+            width: "9px",
+            height: "9px",
+            borderRadius: "999px",
+            background: "#22c55e",
+            boxShadow: "0 0 0 3px rgba(34, 197, 94, 0.18), 0 0 14px rgba(34, 197, 94, 0.42)",
+            pointerEvents: "none",
+          }}
+        />
+      )}
+
       {safeFileUrl && (
         <audio
           ref={audioRef}
@@ -518,7 +557,10 @@ function VoiceMessageAttachment({ attachment, safeFileUrl, isMine, isDisabled })
           onTimeUpdate={(event) => {
             setCurrentMs(Math.round(Number(event.currentTarget.currentTime || 0) * 1000));
           }}
-          onPlay={() => setIsPlaying(true)}
+          onPlay={() => {
+            setIsPlaying(true);
+            markVoiceAsListenedOnce();
+          }}
           onPause={() => setIsPlaying(false)}
           onEnded={() => {
             setIsPlaying(false);
@@ -549,6 +591,7 @@ export default function ChatMessagesList({
   messagesEndRef,
   scrollRequest,
   onVisibleReadBoundary,
+  onVoiceMessageListened,
 }) {
   const navigate = useNavigate();
   const touchReplyRef = useRef(null);
@@ -1871,6 +1914,7 @@ export default function ChatMessagesList({
                                       safeFileUrl={safeFileUrl}
                                       isMine={isMine}
                                       isDisabled={isPendingAttachment || isFailedAttachment}
+                                      onVoiceMessageListened={onVoiceMessageListened}
                                     />
                                     <UploadOverlay />
                                   </div>

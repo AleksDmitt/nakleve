@@ -26,6 +26,7 @@ public class AppDbContext : IdentityDbContext<AppUser, Microsoft.AspNetCore.Iden
     public DbSet<WeatherCache> WeatherCaches => Set<WeatherCache>();
     public DbSet<ModerationLog> ModerationLogs => Set<ModerationLog>();
     public DbSet<ChatMessageAttachment> ChatMessageAttachments => Set<ChatMessageAttachment>();
+    public DbSet<VoiceMessageListenState> VoiceMessageListenStates => Set<VoiceMessageListenState>();
     public DbSet<FishingEntryLike> FishingEntryLikes => Set<FishingEntryLike>();
     public DbSet<FishingEntryComment> FishingEntryComments => Set<FishingEntryComment>();
     public DbSet<FishingEntryShare> FishingEntryShares => Set<FishingEntryShare>();
@@ -50,6 +51,7 @@ public class AppDbContext : IdentityDbContext<AppUser, Microsoft.AspNetCore.Iden
         ConfigureWeatherCache(builder);
         ConfigureModerationLogs(builder);
         ConfigureChatMessageAttachments(builder);
+        ConfigureVoiceMessageListenStates(builder);
         ConfigureVerificationCodes(builder);
         builder.Entity<ChatParticipant>()
             .Property(x => x.Status)
@@ -466,6 +468,35 @@ public class AppDbContext : IdentityDbContext<AppUser, Microsoft.AspNetCore.Iden
             entity.HasOne(x => x.ChatMessage)
                 .WithMany(x => x.Attachments)
                 .HasForeignKey(x => x.ChatMessageId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+    }
+
+
+    private static void ConfigureVoiceMessageListenStates(ModelBuilder builder)
+    {
+        builder.Entity<VoiceMessageListenState>(entity =>
+        {
+            entity.ToTable("VoiceMessageListenStates");
+
+            entity.HasKey(x => x.Id);
+
+            entity.HasIndex(x => new { x.ChatMessageAttachmentId, x.UserId })
+                .IsUnique();
+
+            entity.HasIndex(x => x.UserId);
+
+            entity.Property(x => x.ListenedAtUtc)
+                .IsRequired();
+
+            entity.HasOne(x => x.ChatMessageAttachment)
+                .WithMany()
+                .HasForeignKey(x => x.ChatMessageAttachmentId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(x => x.User)
+                .WithMany()
+                .HasForeignKey(x => x.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
     }
