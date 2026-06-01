@@ -1074,3 +1074,112 @@
     width: calc(100% - 24px);
   }
 }
+
+/* ===== Map interactions: active points and save prompt ===== */
+.map-points-selected-panel {
+  padding-right: 48px;
+}
+
+.map-points-selected-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #e5eef8;
+  background: rgba(148, 163, 184, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: none;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.map-points-selected-close:hover {
+  background: rgba(148, 163, 184, 0.26);
+}
+
+.map-points-selected-panel-info {
+  width: min(560px, calc(100% - 32px));
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.map-points-selected-icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.11);
+  font-size: 23px;
+}
+
+.map-points-selected-content {
+  min-width: 0;
+}
+
+.map-points-selected-content strong,
+.map-points-selected-content span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.map-points-selected-content span {
+  display: block;
+  white-space: nowrap;
+}
+
+.map-points-selected-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.map-points-selected-actions .map-points-primary-button,
+.map-points-selected-actions .map-points-secondary-button {
+  min-height: 38px;
+  padding: 9px 13px;
+  white-space: nowrap;
+}
+
+.yandex-map-marker-icon {
+  cursor: pointer;
+  user-select: none;
+}
+
+.yandex-map-marker-icon:focus-visible {
+  outline: 3px solid rgba(134, 239, 172, 0.9);
+  outline-offset: 3px;
+}
+
+@media (max-width: 720px) {
+  .map-points-selected-panel-info {
+    grid-template-columns: 38px minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .map-points-selected-actions {
+    grid-column: 1 / -1;
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .map-points-selected-actions .map-points-primary-button,
+  .map-points-selected-actions .map-points-secondary-button {
+    width: 100%;
+  }
+
+  .map-points-selected-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 14px;
+    font-size: 20px;
+  }
+}

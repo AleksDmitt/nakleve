@@ -593,6 +593,7 @@ export default function UserProfilePage() {
   const [reportLoading, setReportLoading] = useState(false);
   const [userBlockLoading, setUserBlockLoading] = useState(false);
   const [chatLoading, setChatLoading] = useState(false);
+  const profileMenuRef = useRef(null);
   const [isAvatarOpen, setIsAvatarOpen] = useState(false);
   const [selectedEntry, setSelectedEntry] = useState(null);
   const [activeTab, setActiveTab] = useState("posts");
@@ -671,6 +672,23 @@ export default function UserProfilePage() {
 
     return () => clearTimeout(timer);
   }, [message]);
+
+  useEffect(() => {
+    if (!profileMenuOpen) return undefined;
+
+    function handlePointerDown(event) {
+      if (profileMenuRef.current?.contains(event.target)) return;
+      setProfileMenuOpen(false);
+    }
+
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("touchstart", handlePointerDown, { passive: true });
+
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("touchstart", handlePointerDown);
+    };
+  }, [profileMenuOpen]);
 
   async function handleAddFriend() {
     try {
@@ -1193,7 +1211,7 @@ export default function UserProfilePage() {
           >
             {chatLoading ? "Открываем..." : "Написать"}
           </button>
-          <div style={{ position: "relative" }}>
+          <div ref={profileMenuRef} style={{ position: "relative" }}>
             <button
               className="button-secondary"
               type="button"

@@ -4,7 +4,7 @@ import "../styles/yandexMap.css";
 
 const MIN_ZOOM = 2;
 const MAX_ZOOM = 19;
-const DEFAULT_CENTER = [27.5667, 53.9];
+const DEFAULT_CENTER = [82.920179, 55.030878];
 const DEFAULT_ZOOM = 6;
 const PROGRAMMATIC_CENTER_LOCK_MS = 700;
 const PROGRAMMATIC_ZOOM_LOCK_MS = 450;
@@ -69,6 +69,8 @@ export default function YandexMap({
   points = [],
   userLocation = null,
   onMapClick,
+  onPointClick,
+  onMapContextMenu,
   onLocationClick,
   center = DEFAULT_CENTER,
   zoom = DEFAULT_ZOOM,
@@ -87,7 +89,7 @@ export default function YandexMap({
   const locationButtonWasClickedRef = useRef(false);
   const zoomHoldTimeoutRef = useRef(null);
   const zoomHoldIntervalRef = useRef(null);
-const mapTilerKey = getMapTilerKey();
+  const mapTilerKey = getMapTilerKey();
   const canUseSatellite = Boolean(mapTilerKey);
   const effectiveMapType = mapType === "satellite" && canUseSatellite ? "satellite" : "scheme";
 
@@ -210,17 +212,33 @@ const mapTilerKey = getMapTilerKey();
         point.id === "external" ? "external" : "",
       ].filter(Boolean).join(" ");
 
+      function handlePointClick(event) {
+        event?.stopPropagation?.();
+        onPointClick?.(point);
+      }
+
+      function handlePointKeyDown(event) {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        event.stopPropagation();
+        onPointClick?.(point);
+      }
+
       return (
         <div
           key={point.id || `${point.longitude}-${point.latitude}-${index}`}
           className={markerClassName}
           title={point.name || point.markerTitle || "Точка"}
+          role="button"
+          tabIndex={0}
+          onClick={handlePointClick}
+          onKeyDown={handlePointKeyDown}
         >
           {point.icon || "📍"}
         </div>
       );
     });
-  }, [points]);
+  }, [onPointClick, points]);
 
   function setZoomProgrammatically(nextZoom) {
     programmaticZoomLockUntilRef.current = Date.now() + PROGRAMMATIC_ZOOM_LOCK_MS;
@@ -287,6 +305,34 @@ const mapTilerKey = getMapTilerKey();
     setMapType(nextType);
   }
 
+  function getPointerCoordinates(event) {
+    const coords = event?.coordinates;
+    if (!coords) return null;
+
+    const [lng, lat] = coords;
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+
+    return { lat, lng };
+  }
+
+  function handleMapClick(object, event) {
+    const coords = getPointerCoordinates(event);
+    if (!coords) return;
+
+    moveCenterWithoutChangingZoom([coords.lng, coords.lat]);
+    onMapClick?.(coords);
+  }
+
+  function handleMapContextMenu(object, event) {
+    const coords = getPointerCoordinates(event);
+    if (!coords) return;
+
+    event?.domEvent?.preventDefault?.();
+    event?.domEvent?.stopPropagation?.();
+    moveCenterWithoutChangingZoom([coords.lng, coords.lat]);
+    onMapContextMenu?.(coords);
+  }
+
   if (!components) {
     return <div style={{ padding: 16 }}>Загрузка карты...</div>;
   }
@@ -332,17 +378,8 @@ const mapTilerKey = getMapTilerKey();
         <YMapDefaultFeaturesLayer />
 
         <YMapListener
-          onClick={(object, event) => {
-            const coords = event?.coordinates;
-            if (!coords) return;
-
-            const [lng, lat] = coords;
-            if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
-
-            moveCenterWithoutChangingZoom([lng, lat]);
-
-            onMapClick?.({ lat, lng });
-          }}
+          onClick={handleMapClick}
+          onContextMenu={handleMapContextMenu}
           onUpdate={(object, event) => {
             const payload = getUpdatePayload(object, event);
             const nextZoom = payload?.location?.zoom ?? payload?.zoom;
