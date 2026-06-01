@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
 import YandexMap from "../components/YandexMap";
 import {
   createMapPoint,
@@ -24,6 +25,7 @@ const emptyForm = {
   type: "0",
   region: "",
   isVisibleOnMap: true,
+  isPublic: false,
 };
 
 const pointTypeLabels = {
@@ -48,6 +50,8 @@ function normalizePoint(point) {
   return {
     ...point,
     isVisibleOnMap: point.isVisibleOnMap !== false,
+    isPublic: point.isPublic === true,
+    canManage: point.canManage === true,
   };
 }
 
@@ -113,6 +117,7 @@ function buildCreateEntryUrl(point) {
     region: point.region || "",
     mapPointId: point.id || "",
     pointType: String(point.type ?? 0),
+    source: "map",
   });
 
   return `/profile?${params.toString()}`;
@@ -127,44 +132,146 @@ function getPointPayload(form) {
     type: Number(form.type),
     region: form.region.trim() || null,
     isVisibleOnMap: Boolean(form.isVisibleOnMap),
+    isPublic: Boolean(form.isPublic),
   };
+}
+
+function readCoordinatePair(raw) {
+  const directLatitude = raw?.latitude ?? raw?.lat ?? raw?.Latitude ?? raw?.Lat;
+  const directLongitude = raw?.longitude ?? raw?.lon ?? raw?.lng ?? raw?.Longitude ?? raw?.Lon ?? raw?.Lng;
+
+  if (directLatitude != null && directLongitude != null) {
+    return { latitude: Number(directLatitude), longitude: Number(directLongitude) };
+  }
+
+  const coordinates = raw?.coordinates ?? raw?.Coordinates ?? raw?.point?.coordinates ?? raw?.Point?.Coordinates;
+  if (Array.isArray(coordinates) && coordinates.length >= 2) {
+    return { latitude: Number(coordinates[1]), longitude: Number(coordinates[0]) };
+  }
+
+  const pos = raw?.point?.pos ?? raw?.Point?.Pos ?? raw?.pos ?? raw?.Pos;
+  if (typeof pos === "string") {
+    const parts = pos.split(/\s+|,/).filter(Boolean).map(Number);
+    if (parts.length >= 2) {
+      return { latitude: Number(parts[1]), longitude: Number(parts[0]) };
+    }
+  }
+
+  return { latitude: Number.NaN, longitude: Number.NaN };
 }
 
 function mapSearchResult(raw) {
-  const latitude = raw.latitude ?? raw.lat ?? raw.Latitude;
-  const longitude = raw.longitude ?? raw.lon ?? raw.lng ?? raw.Longitude;
-  const address = raw.address ?? raw.Address ?? raw.formattedAddress ?? raw.FormattedAddress ?? "";
-  const description = raw.description ?? raw.Description ?? address;
-  const region = raw.region ?? raw.Region ?? extractRegionFromAddress(address || description);
+  const directLatitude = raw?.latitude ?? raw?.lat ?? raw?.Latitude ?? raw?.Lat;
+  const directLongitude = raw?.longitude ?? raw?.lon ?? raw?.lng ?? raw?.Longitude ?? raw?.Lon ?? raw?.Lng;
+
+  let latitude = Number(directLatitude);
+  let longitude = Number(directLongitude);
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    const coordinates = raw?.coordinates ?? raw?.Coordinates ?? raw?.point?.coordinates ?? raw?.Point?.Coordinates;
+    if (Array.isArray(coordinates) && coordinates.length >= 2) {
+      // Яндекс и GeoJSON обычно возвращают [longitude, latitude].
+      longitude = Number(coordinates[0]);
+      latitude = Number(coordinates[1]);
+    }
+  }
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    const pos = raw?.point?.pos ?? raw?.Point?.Pos ?? raw?.pos ?? raw?.Pos;
+    if (typeof pos === "string") {
+      const parts = pos.split(/[\s,]+/).filter(Boolean).map(Number);
+      if (parts.length >= 2) {
+        // Яндекс возвращает строку "longitude latitude".
+        longitude = Number(parts[0]);
+        latitude = Number(parts[1]);
+      }
+    }
+  }
+
+  const address = raw?.address ?? raw?.Address ?? raw?.formattedAddress ?? raw?.FormattedAddress ?? "";
+  const description = raw?.description ?? raw?.Description ?? address;
+  const region = raw?.region ?? raw?.Region ?? extractRegionFromAddress(address || description);
 
   return {
-    name: raw.name ?? raw.title ?? raw.Name ?? "Найденное место",
+    name: raw?.name ?? raw?.title ?? raw?.Name ?? raw?.Title ?? "Найденное место",
     description,
     region,
-    latitude: Number(latitude),
-    longitude: Number(longitude),
+    latitude,
+    longitude,
   };
 }
 
-async function tryApiRequest(url) {
+function getSearchResultList(result) {
+  if (Array.isArray(result)) return result;
+
+  return result?.items
+    || result?.Items
+    || result?.results
+    || result?.Results
+    || result?.data
+    || result?.Data
+    || result?.value
+    || result?.Value
+    || [];
+}
+
+async function trySearchEndpoint(url) {
   try {
-    return await apiRequest(url);
-  } catch {
-    return null;
+    return {
+      ok: true,
+      status: 200,
+      data: await apiRequest(url),
+      message: null,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: Number(error?.status || 0),
+      data: error?.data || null,
+      message: error?.message || "Ошибка запроса",
+    };
   }
 }
 
 async function searchPlaces(query) {
   const encoded = encodeURIComponent(query);
-  const result = await tryApiRequest(`/Geocoding/search?query=${encoded}`)
-    ?? await tryApiRequest(`/geocoding/search?query=${encoded}`)
-    ?? await tryApiRequest(`/Geocoding?query=${encoded}`)
-    ?? await tryApiRequest(`/geocoding?query=${encoded}`);
 
-  const list = Array.isArray(result) ? result : result?.items || result?.results || [];
-  return list
-    .map(mapSearchResult)
-    .filter((item) => Number.isFinite(item.latitude) && Number.isFinite(item.longitude));
+  // Рабочие маршруты из старой версии карты. Новые варианты оставлены только запасными.
+  const urls = [
+    `/Geocoding/search?query=${encoded}`,
+    `/geocoding/search?query=${encoded}`,
+    `/Geocoding?query=${encoded}`,
+    `/geocoding?query=${encoded}`,
+  ];
+
+  const hardErrors = [];
+
+  for (const url of urls) {
+    const response = await trySearchEndpoint(url);
+
+    if (!response.ok) {
+      // 404/405 означают, что такого варианта маршрута нет — пробуем следующий.
+      // 400 может быть из-за пустого/короткого запроса, но до сюда он уже валидируется.
+      if (![400, 404, 405].includes(response.status)) {
+        hardErrors.push(response.message);
+      }
+      continue;
+    }
+
+    const list = getSearchResultList(response.data)
+      .map(mapSearchResult)
+      .filter((item) => Number.isFinite(item.latitude) && Number.isFinite(item.longitude));
+
+    if (list.length > 0) {
+      return list;
+    }
+  }
+
+  if (hardErrors.length > 0) {
+    throw new Error(hardErrors[0]);
+  }
+
+  return [];
 }
 
 async function reverseGeocode(latitude, longitude) {
@@ -191,10 +298,30 @@ async function reverseGeocode(latitude, longitude) {
 
 function PointActionsMenu({ point, onEdit, onToggleVisibility, onDelete, onCreateEntry }) {
   const [open, setOpen] = useState(false);
+  const menuRef = useRef(null);
   const isVisible = point.isVisibleOnMap !== false;
+  const canManage = point.canManage === true;
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    function handleOutsideClick(event) {
+      if (!menuRef.current?.contains(event.target)) {
+        setOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handleOutsideClick);
+    document.addEventListener("touchstart", handleOutsideClick, { passive: true });
+
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+      document.removeEventListener("touchstart", handleOutsideClick);
+    };
+  }, [open]);
 
   return (
-    <div className="map-point-menu-wrap">
+    <div className="map-point-menu-wrap" ref={menuRef}>
       <button
         className="map-point-menu-button"
         type="button"
@@ -206,18 +333,24 @@ function PointActionsMenu({ point, onEdit, onToggleVisibility, onDelete, onCreat
 
       {open && (
         <div className="map-point-menu">
-          <button type="button" onClick={() => { setOpen(false); onEdit(point); }}>
-            Изменить
-          </button>
-          <button type="button" onClick={() => { setOpen(false); onToggleVisibility(point); }}>
-            {isVisible ? "Скрыть с карты" : "Показать на карте"}
-          </button>
+          {canManage && (
+            <>
+              <button type="button" onClick={() => { setOpen(false); onEdit(point); }}>
+                Изменить
+              </button>
+              <button type="button" onClick={() => { setOpen(false); onToggleVisibility(point); }}>
+                {isVisible ? "Скрыть с карты" : "Показать на карте"}
+              </button>
+            </>
+          )}
           <button type="button" onClick={() => { setOpen(false); onCreateEntry(point); }}>
             Создать запись здесь
           </button>
-          <button type="button" className="danger" onClick={() => { setOpen(false); onDelete(point); }}>
-            Удалить
-          </button>
+          {canManage && (
+            <button type="button" className="danger" onClick={() => { setOpen(false); onDelete(point); }}>
+              Удалить
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -226,6 +359,8 @@ function PointActionsMenu({ point, onEdit, onToggleVisibility, onDelete, onCreat
 
 export default function MapPointsPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const isAdmin = Boolean(user?.isAdmin || user?.IsAdmin);
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [points, setPoints] = useState([]);
@@ -250,8 +385,11 @@ export default function MapPointsPage() {
   const [placeResults, setPlaceResults] = useState([]);
   const [placeSearching, setPlaceSearching] = useState(false);
   const [selectedMapPoint, setSelectedMapPoint] = useState(null);
+  const [expandedPointIds, setExpandedPointIds] = useState(() => new Set());
   const mapOverlayHistoryPushedRef = useRef(false);
   const pointCardRefs = useRef({});
+  const mapSectionRef = useRef(null);
+  const listSectionRef = useRef(null);
 
   const visiblePoints = useMemo(
     () => points.filter((point) => point.isVisibleOnMap !== false),
@@ -272,7 +410,9 @@ export default function MapPointsPage() {
       const matchesVisibility =
         visibilityFilter === "all"
         || (visibilityFilter === "visible" && point.isVisibleOnMap !== false)
-        || (visibilityFilter === "hidden" && point.isVisibleOnMap === false);
+        || (visibilityFilter === "hidden" && point.isVisibleOnMap === false)
+        || (visibilityFilter === "public" && point.isPublic === true)
+        || (visibilityFilter === "private" && point.isPublic !== true);
 
       return matchesQuery && matchesType && matchesVisibility;
     });
@@ -441,6 +581,7 @@ export default function MapPointsPage() {
       longitude: lon.toFixed(6),
       type: "0",
       isVisibleOnMap: true,
+      isPublic: false,
     });
     setFormOpen(false);
   }, [searchParams]);
@@ -493,6 +634,8 @@ export default function MapPointsPage() {
       type: Number(type),
       region,
       isVisibleOnMap: true,
+      isPublic: false,
+      canManage: true,
       createdAt: null,
       icon: getPointTypeIcon(type),
     });
@@ -507,6 +650,7 @@ export default function MapPointsPage() {
       type: String(type),
       region: region || "",
       isVisibleOnMap: true,
+      isPublic: false,
     });
     setDraftPoint(nextDraft);
     setSelectedMapPoint(null);
@@ -614,6 +758,10 @@ export default function MapPointsPage() {
     ensureMapOverlayHistory();
   }
 
+  function scrollToMap() {
+    mapSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   function openPointOnMap(point) {
     setActivePointId(point.id);
     focusMap(point.longitude, point.latitude, POINT_FOCUS_ZOOM);
@@ -621,6 +769,7 @@ export default function MapPointsPage() {
     setSelectedMapPoint(point);
     setFormOpen(false);
     ensureMapOverlayHistory();
+    window.requestAnimationFrame(scrollToMap);
   }
 
   function openPointInfoFromMap(point) {
@@ -655,6 +804,7 @@ export default function MapPointsPage() {
       type: String(point.type ?? "0"),
       region: point.region || "",
       isVisibleOnMap: point.isVisibleOnMap !== false,
+      isPublic: point.isPublic === true,
     });
 
     focusMap(point.longitude, point.latitude, POINT_FOCUS_ZOOM);
@@ -742,6 +892,7 @@ export default function MapPointsPage() {
         type: point.type,
         region: point.region || null,
         isVisibleOnMap: point.isVisibleOnMap === false,
+        isPublic: point.isPublic === true,
       };
 
       const updated = normalizePoint(await updateMapPoint(point.id, payload));
@@ -750,6 +901,28 @@ export default function MapPointsPage() {
     } catch (err) {
       showMessage(`Не удалось изменить видимость: ${err.message}`, true);
     }
+  }
+
+
+  function scrollToPointList() {
+    listSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function togglePointExpanded(pointId) {
+    const key = String(pointId);
+    setExpandedPointIds((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }
+
+  function handleCreateEntryFromPoint(point) {
+    navigate(buildCreateEntryUrl(point));
   }
 
   return (
@@ -781,7 +954,7 @@ export default function MapPointsPage() {
         </div>
       )}
 
-      <section className="map-points-map-card">
+      <section className="map-points-map-card" ref={mapSectionRef}>
         <div className="map-points-map-topbar map-points-map-topbar-search-only">
           <form className="map-points-place-search" onSubmit={handlePlaceSearch}>
             <input
@@ -820,6 +993,15 @@ export default function MapPointsPage() {
             focusZoom={mapFocusZoom}
           />
 
+          <button
+            type="button"
+            className="map-points-scroll-down"
+            onClick={scrollToPointList}
+            aria-label="Перейти к списку точек"
+          >
+            ↓
+          </button>
+
           {draftPoint && !formOpen && (
             <div className="map-points-selected-panel map-points-selected-panel-draft">
               <button
@@ -854,16 +1036,19 @@ export default function MapPointsPage() {
                 {getPointTypeIcon(selectedMapPoint.type)}
               </div>
               <div className="map-points-selected-content">
-                <p className="map-points-kicker">{getPointTypeLabel(selectedMapPoint.type)}</p>
+                <p className="map-points-kicker">{getPointTypeLabel(selectedMapPoint.type)} · {selectedMapPoint.isPublic ? "Публичная" : "Личная"}</p>
                 <strong>{selectedMapPoint.name || "Точка на карте"}</strong>
-                <span>{selectedMapPoint.description || selectedMapPoint.region || "Описание не указано"}</span>
+                <span>{selectedMapPoint.region || selectedMapPoint.description || "Регион не указан"}</span>
               </div>
               <div className="map-points-selected-actions">
                 <button type="button" className="map-points-primary-button" onClick={() => openPointCard(selectedMapPoint)}>
-                  Карточка
+                  К списку
                 </button>
                 <button type="button" className="map-points-secondary-button" onClick={() => navigate(buildWeatherUrl(selectedMapPoint))}>
                   Прогноз
+                </button>
+                <button type="button" className="map-points-secondary-button" onClick={() => handleCreateEntryFromPoint(selectedMapPoint)}>
+                  Запись
                 </button>
               </div>
             </div>
@@ -934,6 +1119,21 @@ export default function MapPointsPage() {
                   </span>
                 </label>
 
+                {isAdmin && (
+                  <label className={`map-points-visibility-card map-points-public-card ${form.isPublic ? "active" : ""}`}>
+                    <input
+                      type="checkbox"
+                      checked={form.isPublic}
+                      onChange={(event) => setForm({ ...form, isPublic: event.target.checked })}
+                    />
+                    <span className="map-points-toggle" />
+                    <span>
+                      <strong>Публичная точка</strong>
+                      <small>Точка будет видна всем пользователям.</small>
+                    </span>
+                  </label>
+                )}
+
                 <div className="map-points-form-actions">
                   <button type="submit" className="map-points-primary-button" disabled={saving}>
                     {saving ? "Сохранение..." : editingId ? "Сохранить изменения" : "Добавить точку"}
@@ -948,7 +1148,7 @@ export default function MapPointsPage() {
         </div>
       </section>
 
-      <section className="map-points-list-section">
+      <section className="map-points-list-section" ref={listSectionRef}>
         <div className="map-points-list-header">
           <div>
             <p className="map-points-kicker">Список</p>
@@ -971,6 +1171,8 @@ export default function MapPointsPage() {
               <option value="all">Все точки</option>
               <option value="visible">На карте</option>
               <option value="hidden">Скрытые</option>
+              <option value="public">Публичные</option>
+              <option value="private">Мои личные</option>
             </select>
           </div>
         </div>
@@ -988,6 +1190,7 @@ export default function MapPointsPage() {
             {filteredPoints.map((point) => {
               const isActive = activePointId === point.id;
               const isVisible = point.isVisibleOnMap !== false;
+              const isExpanded = expandedPointIds.has(String(point.id));
 
               return (
                 <article
@@ -999,48 +1202,78 @@ export default function MapPointsPage() {
                       delete pointCardRefs.current[String(point.id)];
                     }
                   }}
-                  className={`map-point-card ${isActive ? "active" : ""} ${!isVisible ? "hidden-point" : ""}`}
+                  className={`map-point-list-item ${isActive ? "active" : ""} ${!isVisible ? "hidden-point" : ""}`}
                 >
-                  <PointActionsMenu
-                    point={point}
-                    onEdit={startEdit}
-                    onToggleVisibility={handleToggleVisibility}
-                    onDelete={handleDelete}
-                    onCreateEntry={(item) => navigate(buildCreateEntryUrl(item))}
-                  />
-
-                  <div className="map-point-card-header">
+                  <button
+                    type="button"
+                    className="map-point-list-main"
+                    onClick={() => openPointOnMap(point)}
+                    aria-label="Показать точку на карте"
+                  >
                     <span className="map-point-icon">{getPointTypeIcon(point.type)}</span>
-                    <div>
-                      <h3>{point.name}</h3>
-                      <p>{getPointTypeLabel(point.type)} · {point.region || "Регион не указан"}</p>
-                    </div>
-                  </div>
+                    <span className="map-point-list-text">
+                      <strong>{point.name}</strong>
+                      <small>{point.region || "Регион не указан"}</small>
+                      {point.description && <span>{point.description}</span>}
+                    </span>
+                  </button>
 
-                  {point.description && <p className="map-point-description">{point.description}</p>}
-
-                  <div className="map-point-coordinates">
-                    <span>Широта: <strong>{formatCoordinate(point.latitude)}</strong></span>
-                    <span>Долгота: <strong>{formatCoordinate(point.longitude)}</strong></span>
-                  </div>
-
-                  <div className="map-point-meta">
-                    <span>{formatDate(point.createdAt)}</span>
-                    <span>{isVisible ? "На карте" : "Скрыта"}</span>
-                  </div>
-
-                  <div className="map-point-actions map-point-actions-main">
-                    <button type="button" onClick={() => openPointOnMap(point)}>
-                      Открыть на карте
-                    </button>
+                  <div className="map-point-list-actions">
                     <button type="button" className="map-points-secondary-button" onClick={() => navigate(buildWeatherUrl(point))}>
                       Прогноз
                     </button>
+                    <button
+                      type="button"
+                      className={`map-point-expand-button ${isExpanded ? "active" : ""}`}
+                      onClick={() => togglePointExpanded(point.id)}
+                      aria-label={isExpanded ? "Скрыть подробности" : "Показать подробности"}
+                    >
+                      ⌄
+                    </button>
+                    <PointActionsMenu
+                      point={point}
+                      onEdit={startEdit}
+                      onToggleVisibility={handleToggleVisibility}
+                      onDelete={handleDelete}
+                      onCreateEntry={handleCreateEntryFromPoint}
+                    />
                   </div>
+
+                  {isExpanded && (
+                    <div className="map-point-list-details">
+                      <div>
+                        <span>Тип</span>
+                        <strong>{getPointTypeLabel(point.type)}</strong>
+                      </div>
+                      <div>
+                        <span>Статус</span>
+                        <strong>{point.isPublic ? "Публичная" : "Личная"}</strong>
+                      </div>
+                      <div>
+                        <span>Карта</span>
+                        <strong>{isVisible ? "Показывается" : "Скрыта"}</strong>
+                      </div>
+                      <div>
+                        <span>Добавлена</span>
+                        <strong>{formatDate(point.createdAt)}</strong>
+                      </div>
+                      <div className="map-point-list-coordinates">
+                        <span>Координаты</span>
+                        <strong>{formatCoordinate(point.latitude)}, {formatCoordinate(point.longitude)}</strong>
+                      </div>
+                      <div className="map-point-list-detail-actions">
+                        <button type="button" onClick={() => openPointOnMap(point)}>
+                          Показать на карте
+                        </button>
+                        <button type="button" onClick={() => handleCreateEntryFromPoint(point)}>
+                          Создать запись здесь
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </article>
               );
-            })}
-          </div>
+            })}          </div>
         )}
       </section>
     </div>

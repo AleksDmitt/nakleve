@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import YandexMap from "../components/YandexMap";
 import AvatarUploader from "../components/AvatarUploader";
 import MediaLightbox from "../components/MediaLightbox";
@@ -2816,6 +2816,7 @@ function EntryEditorModal({ isOpen, mode, entry, onClose, onSubmit, saving }) {
 
 export default function ProfilePage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { logout, setUser } = useAuth();
 
   const [profile, setProfile] = useState(null);
@@ -2861,6 +2862,7 @@ export default function ProfilePage() {
   const [selectedShareChatIds, setSelectedShareChatIds] = useState([]);
   const [shareSending, setShareSending] = useState(false);
   const settingsMenuRef = useRef(null);
+  const mapEntryHandledRef = useRef(false);
 
   const publishedEntries = useMemo(() => entries.filter((entry) => entry.isPublishedToFeed), [entries]);
   const publicProfileEntries = useMemo(() => entries.filter((entry) => entry.visibility !== 0), [entries]);
@@ -2888,6 +2890,57 @@ export default function ProfilePage() {
   function showMessage(text, isError = false) {
     setMessage(text);
     setIsErrorMessage(isError);
+  }
+
+
+  function openCreateEntryFromMapParams() {
+    if (mapEntryHandledRef.current) return;
+    if (searchParams.get("createEntry") !== "1") return;
+
+    const latitude = Number(searchParams.get("lat") || searchParams.get("latitude"));
+    const longitude = Number(
+      searchParams.get("lon") ||
+        searchParams.get("lng") ||
+        searchParams.get("longitude")
+    );
+
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+
+    const locationName = searchParams.get("locationName") || searchParams.get("name") || "Выбранная точка";
+    const region = searchParams.get("region") || "";
+
+    const now = new Date();
+    const prefilledEntry = {
+      id: null,
+      title: "",
+      locationName,
+      description: "",
+      catchType: "",
+      catchWeight: "",
+      bait: "",
+      fishingDate: now.toISOString(),
+      fishingStartedAt: now.toISOString(),
+      fishingEndedAt: null,
+      latitude,
+      longitude,
+      region,
+      photoUrl: "",
+      media: [],
+      visibility: 1,
+      isPublishedToFeed: false,
+    };
+
+    mapEntryHandledRef.current = true;
+    setSelectedEntry(prefilledEntry);
+    setEntryModalMode("create");
+    setEntryModalOpen(true);
+    setActiveTab("posts");
+
+    const nextParams = new URLSearchParams(searchParams);
+    ["createEntry", "lat", "latitude", "lon", "lng", "longitude", "locationName", "name", "region", "mapPointId", "pointType", "source"].forEach((key) => {
+      nextParams.delete(key);
+    });
+    setSearchParams(nextParams, { replace: true });
   }
 
   async function handleSubmitBlockAppeal(event) {
@@ -2995,6 +3048,14 @@ export default function ProfilePage() {
 
     loadData();
   }, [setUser]);
+
+  useEffect(() => {
+    if (!profile || profile.isBlocked) return;
+    openCreateEntryFromMapParams();
+    // searchParams intentionally included so direct navigation from the map opens the modal once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile, searchParams]);
+
 
   useEffect(() => {
     if (profile?.isBlocked) return undefined;
@@ -3160,6 +3221,7 @@ export default function ProfilePage() {
   }
 
   function openCreateEntryModal() {
+    mapEntryHandledRef.current = false;
     setSelectedEntry(null);
     setEntryModalMode("create");
     setEntryModalOpen(true);
