@@ -113,18 +113,29 @@ export default function ChatComposer({
   const syncTimerRef = useRef(null);
   const lastChatIdRef = useRef(chatId);
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
+  const [isVoiceLocked, setIsVoiceLockedState] = useState(false);
   const [recordingMs, setRecordingMs] = useState(0);
   const [recordingError, setRecordingError] = useState("");
+  const [isSendingVoice, setIsSendingVoice] = useState(false);
   const mediaRecorderRef = useRef(null);
   const recordingStreamRef = useRef(null);
   const recordingChunksRef = useRef([]);
   const recordingStartedAtRef = useRef(0);
   const recordingTimerRef = useRef(null);
+  const voicePointerIdRef = useRef(null);
+  const voicePointerDownRef = useRef(false);
+  const voicePointerStartYRef = useRef(null);
+  const voiceLockedRef = useRef(false);
+  const stopAfterVoiceStartRef = useRef(false);
 
+  const hasDraftText = localDraft.trim().length > 0;
+  const hasPendingFiles = pendingFiles.length > 0;
+  const shouldShowSendButton = hasDraftText || hasPendingFiles;
+  const voiceDisabled = !isConnectionReady || composerDisabled || hasPendingFiles || isSendingVoice;
   const sendDisabled =
     !isConnectionReady ||
     isRecordingVoice ||
-    (!localDraft.trim() && pendingFiles.length === 0) ||
+    (!hasDraftText && !hasPendingFiles) ||
     composerDisabled;
 
   function resizeTextarea() {
@@ -204,6 +215,12 @@ export default function ChatComposer({
     return `${minutes}:${String(seconds).padStart(2, "0")}`;
   }
 
+  function setVoiceLocked(value) {
+    const nextValue = Boolean(value);
+    voiceLockedRef.current = nextValue;
+    setIsVoiceLockedState(nextValue);
+  }
+
   function getSupportedVoiceMimeType() {
     if (typeof MediaRecorder === "undefined") return "";
 
@@ -277,8 +294,10 @@ export default function ChatComposer({
     }
   }
 
-  async function startVoiceRecording() {
-    if (composerDisabled || isRecordingVoice) return;
+  async function startVoiceRecording(options = {}) {
+    const { locked = false } = options;
+
+    if (voiceDisabled || isRecordingVoice) return;
 
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setRecordingError("Браузер не поддерживает запись голосовых сообщений.");
@@ -287,9 +306,17 @@ export default function ChatComposer({
 
     try {
       setRecordingError("");
+      setVoiceLocked(locked);
       onTypingStopped?.();
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+        },
+      });
       const mimeType = getSupportedVoiceMimeType();
       const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
 
@@ -311,11 +338,19 @@ export default function ChatComposer({
       recordingTimerRef.current = window.setInterval(() => {
         setRecordingMs(Date.now() - recordingStartedAtRef.current);
       }, 250);
+
+      if (stopAfterVoiceStartRef.current || (!voicePointerDownRef.current && !voiceLockedRef.current)) {
+        stopAfterVoiceStartRef.current = false;
+        window.setTimeout(() => {
+          stopVoiceRecording({ save: true });
+        }, 0);
+      }
     } catch (err) {
       console.error(err);
       cleanupRecordingStream();
       stopRecordingTimer();
       setIsRecordingVoice(false);
+      setVoiceLocked(false);
       setRecordingError("Не удалось получить доступ к микрофону.");
     }
   }
@@ -328,6 +363,7 @@ export default function ChatComposer({
       cleanupRecordingStream();
       stopRecordingTimer();
       setIsRecordingVoice(false);
+      setVoiceLocked(false);
       return;
     }
 
@@ -343,11 +379,24 @@ export default function ChatComposer({
             const file = new File([blob], `voice-${Date.now()}.${extension}`, { type: mimeType });
             const waveform = await buildVoiceWaveform(blob);
 
-            handleVoiceRecorded?.({
-              file,
-              durationMs,
-              waveform,
-            });
+            recordingChunksRef.current = [];
+            mediaRecorderRef.current = null;
+            cleanupRecordingStream();
+            stopRecordingTimer();
+            setIsRecordingVoice(false);
+            setVoiceLocked(false);
+            setRecordingMs(0);
+
+            setIsSendingVoice(true);
+            try {
+              await handleVoiceRecorded?.({
+                file,
+                durationMs,
+                waveform,
+              });
+            } finally {
+              setIsSendingVoice(false);
+            }
           } else if (save && durationMs < 700) {
             setRecordingError("Голосовое сообщение слишком короткое.");
           }
@@ -357,6 +406,7 @@ export default function ChatComposer({
           cleanupRecordingStream();
           stopRecordingTimer();
           setIsRecordingVoice(false);
+          setVoiceLocked(false);
           setRecordingMs(0);
           resolve();
         }
@@ -366,16 +416,102 @@ export default function ChatComposer({
     });
   }
 
-  function handleVoiceButtonClick() {
-    if (isRecordingVoice) {
-      stopVoiceRecording({ save: true });
+  function finishVoicePointer(event, options = {}) {
+    const { save = true } = options;
+
+    if (voicePointerIdRef.current != null && event?.pointerId != null && event.pointerId !== voicePointerIdRef.current) {
       return;
     }
 
-    startVoiceRecording();
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+
+    voicePointerDownRef.current = false;
+    voicePointerIdRef.current = null;
+    voicePointerStartYRef.current = null;
+
+    if (voiceLockedRef.current) {
+      return;
+    }
+
+    if (mediaRecorderRef.current?.state === "recording") {
+      stopVoiceRecording({ save });
+      return;
+    }
+
+    stopAfterVoiceStartRef.current = save;
+  }
+
+  function lockVoiceRecording(event) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+
+    if (!isRecordingVoice) return;
+    setVoiceLocked(true);
+  }
+
+  async function sendLockedVoice(event) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+
+    if (!isRecordingVoice || !voiceLockedRef.current) return;
+    await stopVoiceRecording({ save: true });
+  }
+
+  function handleVoicePointerDown(event) {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (voiceDisabled || isRecordingVoice) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const startLocked = event.pointerType === "mouse";
+
+    voicePointerIdRef.current = event.pointerId;
+    voicePointerDownRef.current = !startLocked;
+    voicePointerStartYRef.current = event.clientY ?? null;
+    stopAfterVoiceStartRef.current = false;
+
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Браузер может не поддерживать pointer capture. Запись всё равно работает.
+    }
+
+    startVoiceRecording({ locked: startLocked });
+  }
+
+  function handleVoicePointerMove(event) {
+    if (!isRecordingVoice || voiceLockedRef.current) return;
+    if (voicePointerIdRef.current != null && event.pointerId !== voicePointerIdRef.current) return;
+
+    const startY = voicePointerStartYRef.current;
+    if (startY == null || event.clientY == null) return;
+
+    if (startY - event.clientY >= 62) {
+      setVoiceLocked(true);
+    }
+  }
+
+  function handleVoicePointerUp(event) {
+    finishVoicePointer(event, { save: true });
+  }
+
+  function handleVoicePointerCancel(event) {
+    if (voiceLockedRef.current) {
+      cancelVoiceRecording();
+      return;
+    }
+
+    finishVoicePointer(event, { save: false });
   }
 
   function cancelVoiceRecording() {
+    voicePointerDownRef.current = false;
+    voicePointerIdRef.current = null;
+    voicePointerStartYRef.current = null;
+    stopAfterVoiceStartRef.current = false;
+    setVoiceLocked(false);
     stopVoiceRecording({ save: false });
   }
 
@@ -385,6 +521,11 @@ export default function ChatComposer({
         mediaRecorderRef.current.stop();
       }
 
+      voicePointerDownRef.current = false;
+      voicePointerIdRef.current = null;
+      voicePointerStartYRef.current = null;
+      voiceLockedRef.current = false;
+      stopAfterVoiceStartRef.current = false;
       cleanupRecordingStream();
       stopRecordingTimer();
     };
@@ -515,7 +656,7 @@ export default function ChatComposer({
 
         .chat-composer-shell {
           display: grid;
-          grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+          grid-template-columns: auto minmax(0, 1fr) auto auto;
           align-items: end;
           gap: 6px;
           min-height: 56px;
@@ -569,63 +710,195 @@ export default function ChatComposer({
           border-color: rgba(94, 234, 212, 0.24);
         }
 
-        .chat-voice-recorder {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-          padding: 10px 12px;
-          border: 1px solid rgba(248, 113, 113, 0.24);
-          border-radius: 16px;
-          background: rgba(127, 29, 29, 0.18);
-          color: #fff;
-        }
-
-        .chat-voice-recorder__status {
+        .chat-voice-inline-status {
           min-width: 0;
+          min-height: 42px;
+          padding: 0 8px;
+          border-radius: 16px;
           display: flex;
           align-items: center;
-          gap: 9px;
-          font-size: 13px;
-          font-weight: 900;
+          gap: 10px;
+          color: #fecaca;
+          font-size: 15px;
+          font-weight: 800;
+          user-select: none;
+          -webkit-user-select: none;
         }
 
-        .chat-voice-recorder__dot {
+        .chat-voice-inline-status__dot {
           width: 9px;
           height: 9px;
+          flex: 0 0 auto;
           border-radius: 50%;
           background: #f87171;
           box-shadow: 0 0 0 6px rgba(248, 113, 113, 0.12);
         }
 
-        .chat-voice-recorder__actions {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          flex-shrink: 0;
+        .chat-voice-inline-status__text {
+          white-space: nowrap;
         }
 
-        .chat-voice-recorder__button {
-          min-height: 34px;
-          padding: 0 12px;
-          border: 1px solid rgba(255,255,255,0.14);
+        .chat-voice-inline-status__hint {
+          margin-left: auto;
+          color: rgba(226, 232, 240, 0.46);
+          font-size: 12px;
+          font-weight: 700;
+          white-space: nowrap;
+        }
+
+        .chat-voice-inline-status__actions {
+          margin-left: auto;
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .chat-voice-action-button {
+          min-width: 0;
+          height: 32px;
+          padding: 0 10px;
           border-radius: 999px;
-          color: #fff;
-          background: rgba(255,255,255,0.08);
+          border: 1px solid rgba(148, 163, 184, 0.18);
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          color: rgba(226, 232, 240, 0.86);
+          background: rgba(255, 255, 255, 0.06);
           font-size: 12px;
           font-weight: 900;
           cursor: pointer;
+          white-space: nowrap;
         }
 
-        .chat-voice-recorder__button--save {
-          color: #052e16;
-          border-color: rgba(134, 239, 172, 0.56);
-          background: linear-gradient(135deg, #86efac, #5eead4);
+        .chat-voice-action-button:hover {
+          color: #ffffff;
+          background: rgba(255, 255, 255, 0.1);
+        }
+
+        .chat-voice-action-button--danger {
+          color: #fecaca;
+          border-color: rgba(248, 113, 113, 0.24);
+          background: rgba(127, 29, 29, 0.2);
+        }
+
+        .chat-voice-action-button--lock {
+          color: #dbeafe;
         }
 
         .chat-composer-icon-button--recording {
           color: #fecaca;
           background: rgba(127, 29, 29, 0.32);
+        }
+
+        .chat-composer-icon-button--mic {
+          touch-action: none;
+          -webkit-touch-callout: none;
+        }
+
+        .chat-composer-icon-button--mic:not(:disabled) {
+          color: rgba(226, 232, 240, 0.86);
+          background: rgba(255, 255, 255, 0.04);
+        }
+
+        .chat-composer-icon-button--mic:not(:disabled):active {
+          color: #fecaca;
+          background: rgba(127, 29, 29, 0.32);
+          transform: scale(0.98);
+        }
+
+        .chat-voice-record-button-wrap {
+          position: relative;
+          width: 42px;
+          height: 42px;
+          min-width: 42px;
+          min-height: 42px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .chat-voice-lock-swipe-hint {
+          position: absolute;
+          left: 50%;
+          bottom: 52px;
+          width: 42px;
+          height: 118px;
+          border-radius: 999px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: flex-start;
+          gap: 7px;
+          padding: 8px 0 10px;
+          color: #dbeafe;
+          background: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.42));
+          border: 1px solid rgba(148, 163, 184, 0.22);
+          box-shadow: 0 18px 45px rgba(0, 0, 0, 0.32);
+          transform: translateX(-50%);
+          pointer-events: none;
+          z-index: 28;
+          animation: chatVoiceLockHintAppear 0.18s ease-out;
+        }
+
+        .chat-voice-lock-swipe-hint__lock {
+          width: 28px;
+          height: 28px;
+          border-radius: 999px;
+          display: grid;
+          place-items: center;
+          color: #052e16;
+          background: linear-gradient(135deg, #86efac, #5eead4);
+          box-shadow: 0 0 0 6px rgba(94, 234, 212, 0.1);
+          font-size: 14px;
+          line-height: 1;
+        }
+
+        .chat-voice-lock-swipe-hint__arrow {
+          width: 14px;
+          height: 14px;
+          border-left: 2px solid currentColor;
+          border-top: 2px solid currentColor;
+          opacity: 0.88;
+          transform: rotate(45deg);
+          animation: chatVoiceLockArrowMove 1.05s ease-in-out infinite;
+        }
+
+        .chat-voice-lock-swipe-hint__dot {
+          width: 4px;
+          height: 4px;
+          border-radius: 999px;
+          background: currentColor;
+          opacity: 0.34;
+        }
+
+        .chat-voice-lock-swipe-hint__dot:nth-child(3) {
+          opacity: 0.48;
+        }
+
+        .chat-voice-lock-swipe-hint__dot:nth-child(4) {
+          opacity: 0.62;
+        }
+
+        @keyframes chatVoiceLockHintAppear {
+          from {
+            opacity: 0;
+            transform: translateX(-50%) translateY(8px) scale(0.96);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0) scale(1);
+          }
+        }
+
+        @keyframes chatVoiceLockArrowMove {
+          0%, 100% {
+            transform: rotate(45deg) translate(0, 0);
+            opacity: 0.52;
+          }
+          45% {
+            transform: rotate(45deg) translate(-5px, -5px);
+            opacity: 1;
+          }
         }
 
         .chat-pending-voice {
@@ -646,7 +919,7 @@ export default function ChatComposer({
           }
 
           .chat-composer-shell {
-            grid-template-columns: 38px 38px minmax(0, 1fr) 38px 38px;
+            grid-template-columns: 38px minmax(0, 1fr) 38px 38px;
             gap: 2px;
             border-radius: 22px;
           }
@@ -658,8 +931,42 @@ export default function ChatComposer({
             min-height: 40px;
           }
 
+          .chat-voice-record-button-wrap {
+            width: 40px;
+            height: 40px;
+            min-width: 40px;
+            min-height: 40px;
+          }
+
+          .chat-voice-lock-swipe-hint {
+            bottom: 50px;
+            width: 40px;
+            height: 108px;
+          }
+
           .chat-composer-help {
             display: none !important;
+          }
+
+          .chat-voice-inline-status {
+            gap: 8px;
+            padding: 0 4px;
+            font-size: 16px;
+          }
+
+          .chat-voice-inline-status__label,
+          .chat-voice-inline-status__hint {
+            display: none !important;
+          }
+
+          .chat-voice-inline-status__actions {
+            gap: 4px;
+          }
+
+          .chat-voice-action-button {
+            height: 30px;
+            padding: 0 9px;
+            font-size: 11px;
           }
         }
       `}</style>
@@ -855,33 +1162,7 @@ export default function ChatComposer({
         </div>
       )}
 
-      {isRecordingVoice && (
-        <div className="chat-voice-recorder">
-          <div className="chat-voice-recorder__status">
-            <span className="chat-voice-recorder__dot" />
-            <span>Запись голосового · {formatVoiceDuration(recordingMs)}</span>
-          </div>
 
-          <div className="chat-voice-recorder__actions">
-            <button
-              type="button"
-              className="chat-voice-recorder__button"
-              onPointerDown={keepComposerFocused}
-              onClick={cancelVoiceRecording}
-            >
-              Отмена
-            </button>
-            <button
-              type="button"
-              className="chat-voice-recorder__button chat-voice-recorder__button--save"
-              onPointerDown={keepComposerFocused}
-              onClick={() => stopVoiceRecording({ save: true })}
-            >
-              Готово
-            </button>
-          </div>
-        </div>
-      )}
 
       <div className="chat-composer-shell">
         <input
@@ -904,35 +1185,56 @@ export default function ChatComposer({
           <PaperclipIcon />
         </button>
 
-        <button
-          type="button"
-          className={`chat-composer-icon-button ${isRecordingVoice ? "chat-composer-icon-button--recording" : ""}`}
-          onPointerDown={keepComposerFocused}
-          onClick={handleVoiceButtonClick}
-          disabled={composerDisabled}
-          title={isRecordingVoice ? "Остановить запись" : "Записать голосовое"}
-        >
-          {isRecordingVoice ? <StopIcon /> : <MicIcon />}
-        </button>
+        {isRecordingVoice ? (
+          <div className="chat-voice-inline-status" aria-live="polite">
+            <span className="chat-voice-inline-status__dot" />
+            <span className="chat-voice-inline-status__text">
+              <span className="chat-voice-inline-status__label">{isVoiceLocked ? "Голосовое зафиксировано · " : "Запись голосового · "}</span>
+              {formatVoiceDuration(recordingMs)}
+            </span>
 
-        <textarea
-          ref={textareaRef}
-          className="chat-scrollbar chat-composer-textarea"
-          placeholder={
-            isRecordingVoice
-              ? "Идет запись голосового..."
-              : composerDisabled
+            {isVoiceLocked ? (
+              <span className="chat-voice-inline-status__actions">
+                <button
+                  type="button"
+                  className="chat-voice-action-button chat-voice-action-button--danger"
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={cancelVoiceRecording}
+                >
+                  Отмена
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="chat-voice-action-button chat-voice-action-button--lock"
+                onPointerDown={lockVoiceRecording}
+                onClick={lockVoiceRecording}
+                title="Зафиксировать запись"
+                aria-label="Зафиксировать запись"
+              >
+                🔒
+              </button>
+            )}
+          </div>
+        ) : (
+          <textarea
+            ref={textareaRef}
+            className="chat-scrollbar chat-composer-textarea"
+            placeholder={
+              composerDisabled
                 ? (loadingGroupDetails ? "Загрузка..." : groupSystemMessage || "Отправка сообщений недоступна")
                 : "Сообщение"
-          }
-          disabled={composerDisabled}
-          value={localDraft}
-          onChange={handleTextareaChange}
-          onKeyDown={handleTextareaKeyDown}
-          onPaste={handleComposerPaste}
-          rows={1}
-          style={{ opacity: composerDisabled ? 0.7 : 1 }}
-        />
+            }
+            disabled={composerDisabled}
+            value={localDraft}
+            onChange={handleTextareaChange}
+            onKeyDown={handleTextareaKeyDown}
+            onPaste={handleComposerPaste}
+            rows={1}
+            style={{ opacity: composerDisabled ? 0.7 : 1 }}
+          />
+        )}
 
         <div style={{ position: "relative", lineHeight: 0 }} onClick={(e) => e.stopPropagation()}>
           <button
@@ -977,15 +1279,53 @@ export default function ChatComposer({
           )}
         </div>
 
-        <button
-          type="submit"
-          className="chat-composer-icon-button chat-composer-icon-button--send"
-          onPointerDown={keepComposerFocused}
-          disabled={sendDisabled}
-          title="Отправить"
-        >
-          <SendIcon />
-        </button>
+        {isRecordingVoice && isVoiceLocked ? (
+          <button
+            type="button"
+            className="chat-composer-icon-button chat-composer-icon-button--send"
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={sendLockedVoice}
+            disabled={isSendingVoice}
+            title="Отправить голосовое"
+          >
+            <SendIcon />
+          </button>
+        ) : shouldShowSendButton ? (
+          <button
+            type="submit"
+            className="chat-composer-icon-button chat-composer-icon-button--send"
+            onPointerDown={keepComposerFocused}
+            disabled={sendDisabled}
+            title="Отправить"
+          >
+            <SendIcon />
+          </button>
+        ) : (
+          <div className="chat-voice-record-button-wrap">
+            {isRecordingVoice && !isVoiceLocked && (
+              <div className="chat-voice-lock-swipe-hint" aria-hidden="true">
+                <span className="chat-voice-lock-swipe-hint__lock">🔒</span>
+                <span className="chat-voice-lock-swipe-hint__arrow" />
+                <span className="chat-voice-lock-swipe-hint__dot" />
+                <span className="chat-voice-lock-swipe-hint__dot" />
+                <span className="chat-voice-lock-swipe-hint__dot" />
+              </div>
+            )}
+
+            <button
+              type="button"
+              className={`chat-composer-icon-button chat-composer-icon-button--mic ${isRecordingVoice ? "chat-composer-icon-button--recording" : ""}`}
+              onPointerDown={handleVoicePointerDown}
+              onPointerMove={handleVoicePointerMove}
+              onPointerUp={handleVoicePointerUp}
+              onPointerCancel={handleVoicePointerCancel}
+              disabled={voiceDisabled && !isRecordingVoice}
+              title={isRecordingVoice ? "Идет запись" : "Удерживайте, чтобы записать голосовое"}
+            >
+              {isRecordingVoice ? <StopIcon /> : <MicIcon />}
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="chat-composer-help muted-text" style={{ fontSize: "13px", paddingLeft: "8px" }}>

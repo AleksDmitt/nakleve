@@ -1108,12 +1108,10 @@ export default function ChatsPage() {
     }
   }
 
-  function handleVoiceRecorded(recording) {
-    if (!selectedChat) return;
-    if (selectedChat.type === "Group" && !groupCanSend) return;
-    if (!recording?.file) return;
-
-    setMessage("");
+  async function handleVoiceRecorded(recording) {
+    if (!selectedChat) return false;
+    if (selectedChat.type === "Group" && !groupCanSend) return false;
+    if (!recording?.file) return false;
 
     const prepared = buildPendingFile(recording.file, {
       isVoiceMessage: true,
@@ -1121,8 +1119,29 @@ export default function ChatsPage() {
       voiceWaveform: recording.waveform,
     });
 
-    setPendingFilesForCurrentChat([...pendingFiles, prepared]);
-    focusComposerSoon();
+    try {
+      setMessage("");
+      stopTypingNow();
+
+      const replyToSnapshot = replyTo;
+      const replyToMessageId = replyToSnapshot?.id ?? null;
+
+      setReplyTo(null);
+      setShowEmojiPicker(false);
+
+      await uploadAndSendOptimisticMessage(prepared, "", replyToMessageId, {
+        includeText: false,
+        replyToSnapshot,
+      });
+
+      await loadChats({ showLoader: false });
+      focusComposerSoon();
+      return true;
+    } catch (err) {
+      console.error(err);
+      setMessage(`Не удалось отправить голосовое сообщение: ${err.message}`);
+      return false;
+    }
   }
 
   function handleComposerPaste(event) {
@@ -1184,7 +1203,8 @@ export default function ChatsPage() {
     }
   }
 
-  async function uploadAndSendOptimisticMessage(fileItem, textToSend, replyToMessageId) {
+  async function uploadAndSendOptimisticMessage(fileItem, textToSend, replyToMessageId, options = {}) {
+    const { includeText = fileItem === pendingFiles[0], replyToSnapshot = replyTo } = options;
     const optimisticId = `temp-${fileItem.localId}`;
 
     const optimisticMessage = {
@@ -1193,11 +1213,11 @@ export default function ChatsPage() {
       userId: user?.id,
       userName: user?.userName || "Вы",
       userAvatarUrl: user?.avatarUrl || null,
-      text: fileItem === pendingFiles[0] ? textToSend : "",
+      text: includeText ? textToSend : "",
       sentAt: new Date().toISOString(),
       replyToMessageId,
-      replyToUserName: replyTo?.userName ?? null,
-      replyToText: replyTo?.text ?? null,
+      replyToUserName: replyToSnapshot?.userName ?? null,
+      replyToText: replyToSnapshot?.text ?? null,
       isDeleted: false,
       isDeletedForAll: false,
       isReadByOthers: false,
@@ -1237,7 +1257,7 @@ export default function ChatsPage() {
       const uploaded = await uploadChatAttachment(fileItem.file);
 
       const response = await sendChatMessage(selectedChat.id, {
-        text: fileItem === pendingFiles[0] ? textToSend : null,
+        text: includeText ? textToSend : null,
         replyToMessageId,
         attachments: [
           {
@@ -1265,7 +1285,7 @@ export default function ChatsPage() {
           msg.id === optimisticId
             ? {
                 ...msg,
-                text: fileItem === pendingFiles[0] ? textToSend : "",
+                text: includeText ? textToSend : "",
                 isUploading: false,
                 uploadStatusText: "Не удалось загрузить файл",
                 attachments: msg.attachments?.map((attachment) => ({
@@ -1295,7 +1315,8 @@ export default function ChatsPage() {
       setMessage("");
       stopTypingNow();
       const textToSend = rawDraft.trim();
-      const replyToMessageId = replyTo?.id ?? null;
+      const replyToSnapshot = replyTo;
+      const replyToMessageId = replyToSnapshot?.id ?? null;
 
       if (pendingFiles.length > 0) {
         const filesToSend = [...pendingFiles];
@@ -1309,7 +1330,10 @@ export default function ChatsPage() {
         clearPendingFiles(filesToSend, { revokeUrls: false });
 
         for (const fileItem of filesToSend) {
-          await uploadAndSendOptimisticMessage(fileItem, textToSend, replyToMessageId);
+          await uploadAndSendOptimisticMessage(fileItem, textToSend, replyToMessageId, {
+            includeText: fileItem === filesToSend[0],
+            replyToSnapshot,
+          });
         }
 
         await loadChats({ showLoader: false });
