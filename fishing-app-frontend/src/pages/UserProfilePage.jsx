@@ -958,6 +958,22 @@ export default function UserProfilePage() {
     navigate(getFeedEntryPath(entry.id));
   }
 
+  function handleOpenEntryAuthor(_entry, targetUserId) {
+    const authorId = targetUserId || profile?.id || profile?.userId || id;
+
+    if (!authorId) {
+      showMessage("Не удалось определить автора записи.", true);
+      return;
+    }
+
+    const currentUserId = user?.id || user?.userId;
+    const targetPath = currentUserId && String(currentUserId) === String(authorId)
+      ? "/profile"
+      : `/users/${authorId}`;
+
+    navigate(targetPath);
+  }
+
   function openReportModal() {
     setProfileMenuOpen(false);
     setReportReasonCode("rules");
