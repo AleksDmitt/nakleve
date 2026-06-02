@@ -9,7 +9,7 @@ public class UpdateFishingEntryRequest
     [MaxLength(120)]
     public string Title { get; set; } = string.Empty;
 
-    [MaxLength(3000)]
+    [MaxLength(5000)]
     public string? Description { get; set; }
 
     public DateTime? FishingDate { get; set; }
@@ -30,7 +30,7 @@ public class UpdateFishingEntryRequest
 
     public decimal? CatchWeight { get; set; }
 
-    [MaxLength(100)]
+    [MaxLength(1000)]
     public string? Bait { get; set; }
 
     public string? PhotoUrl { get; set; }

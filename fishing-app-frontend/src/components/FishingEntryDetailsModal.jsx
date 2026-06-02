@@ -301,10 +301,26 @@ export default function FishingEntryDetailsModal({
   historyKey = "entry-details-modal",
 }) {
   const [fullscreenViewer, setFullscreenViewer] = useState(null);
+  const [selectedMediaIndex, setSelectedMediaIndex] = useState(0);
+  const galleryTouchStartRef = useRef(null);
+  const gallerySwipeLockRef = useRef(false);
   const historyTokenRef = useRef(null);
   const fallbackCloseTimerRef = useRef(null);
   const onCloseRef = useRef(onClose);
   const media = useMemo(() => normalizeMedia(entry), [entry]);
+  const activeMediaIndex = media.length > 0 ? Math.min(selectedMediaIndex, media.length - 1) : 0;
+  const activeMedia = media[activeMediaIndex] || null;
+
+  useEffect(() => {
+    setSelectedMediaIndex(0);
+    galleryTouchStartRef.current = null;
+  }, [entry?.id]);
+
+  useEffect(() => {
+    if (selectedMediaIndex > 0 && selectedMediaIndex >= media.length) {
+      setSelectedMediaIndex(Math.max(0, media.length - 1));
+    }
+  }, [media.length, selectedMediaIndex]);
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -454,13 +470,67 @@ export default function FishingEntryDetailsModal({
     onOpenAuthor(entry, resolvedAuthorUserId);
   }
 
-  function openFullscreen(initialIndex) {
+  function openFullscreen(initialIndex = activeMediaIndex) {
     if (media.length === 0) return;
     setFullscreenViewer({
       title: entry.title || "Запись о рыбалке",
       media,
-      initialIndex,
+      initialIndex: Math.max(0, Math.min(initialIndex, media.length - 1)),
     });
+  }
+
+  function selectMedia(index) {
+    if (media.length === 0) return;
+    setSelectedMediaIndex((index + media.length) % media.length);
+  }
+
+  function showPreviousMedia(event) {
+    event?.stopPropagation?.();
+    selectMedia(activeMediaIndex - 1);
+  }
+
+  function showNextMedia(event) {
+    event?.stopPropagation?.();
+    selectMedia(activeMediaIndex + 1);
+  }
+
+  function handleGalleryTouchStart(event) {
+    if (media.length <= 1) return;
+    const touch = event.touches?.[0];
+    if (!touch) return;
+    gallerySwipeLockRef.current = false;
+    galleryTouchStartRef.current = { x: touch.clientX, y: touch.clientY };
+  }
+
+  function handleGalleryTouchEnd(event) {
+    if (media.length <= 1 || !galleryTouchStartRef.current) return;
+    const touch = event.changedTouches?.[0];
+    const start = galleryTouchStartRef.current;
+    galleryTouchStartRef.current = null;
+
+    if (!touch || !start) return;
+
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+
+    if (Math.abs(dx) < 42 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
+
+    gallerySwipeLockRef.current = true;
+
+    if (dx < 0) {
+      selectMedia(activeMediaIndex + 1);
+    } else {
+      selectMedia(activeMediaIndex - 1);
+    }
+  }
+
+  function handleHeroClick() {
+    if (gallerySwipeLockRef.current) {
+      gallerySwipeLockRef.current = false;
+      return;
+    }
+
+    openFullscreen(activeMediaIndex);
   }
 
   const node = (
@@ -587,21 +657,67 @@ export default function FishingEntryDetailsModal({
           backdrop-filter: blur(10px);
         }
 
-        .entry-viewer-thumbs {
+        .entry-viewer-hero-nav {
+          position: absolute;
+          top: 50%;
+          z-index: 2;
+          width: 42px;
+          height: 42px;
           display: grid;
-          grid-template-columns: repeat(5, minmax(0, 1fr));
+          place-items: center;
+          padding: 0;
+          border: 1px solid rgba(255, 255, 255, 0.18);
+          border-radius: 50%;
+          color: #f8fafc;
+          background: rgba(2, 6, 23, 0.58);
+          box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+          backdrop-filter: blur(10px);
+          cursor: pointer;
+          font-size: 30px;
+          font-weight: 800;
+          line-height: 1;
+          transform: translateY(-50%);
+        }
+
+        .entry-viewer-hero-nav--prev {
+          left: 12px;
+        }
+
+        .entry-viewer-hero-nav--next {
+          right: 12px;
+        }
+
+        .entry-viewer-thumbs {
+          display: flex;
           gap: 8px;
+          overflow-x: auto;
+          overscroll-behavior-inline: contain;
+          scrollbar-width: thin;
+          padding: 1px 2px 3px;
         }
 
         .entry-viewer-thumb {
           position: relative;
+          width: 70px;
+          flex: 0 0 70px;
           aspect-ratio: 1 / 1;
           padding: 0;
           border: 1px solid rgba(148, 163, 184, 0.16);
           border-radius: 14px;
           overflow: hidden;
           background: rgba(15, 23, 42, 0.72);
-          cursor: zoom-in;
+          cursor: pointer;
+          transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+        }
+
+        .entry-viewer-thumb:hover,
+        .entry-viewer-thumb.is-active {
+          border-color: rgba(134, 239, 172, 0.72);
+          box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.16);
+        }
+
+        .entry-viewer-thumb.is-active {
+          transform: translateY(-1px);
         }
 
         .entry-viewer-thumb img,
@@ -983,12 +1099,28 @@ export default function FishingEntryDetailsModal({
           }
 
           .entry-viewer-thumbs {
-            grid-template-columns: repeat(5, minmax(0, 1fr));
             gap: 6px;
+            padding-inline: 1px;
           }
 
           .entry-viewer-thumb {
+            width: 58px;
+            flex-basis: 58px;
             border-radius: 12px;
+          }
+
+          .entry-viewer-hero-nav {
+            width: 38px;
+            height: 38px;
+            font-size: 26px;
+          }
+
+          .entry-viewer-hero-nav--prev {
+            left: 8px;
+          }
+
+          .entry-viewer-hero-nav--next {
+            right: 8px;
           }
 
           .entry-viewer-panel {
@@ -1069,38 +1201,66 @@ export default function FishingEntryDetailsModal({
         <div className="entry-viewer-scroll">
           <div className="entry-viewer-content">
             <div className="entry-viewer-media-block">
-              {media.length > 0 ? (
+              {media.length > 0 && activeMedia ? (
                 <>
-                  <button className="entry-viewer-hero" type="button" onClick={() => openFullscreen(0)} aria-label="Открыть фото на весь экран">
-                    {media[0].mediaType === "video" ? (
-                      <video src={getSafeAppFileUrl(media[0].url)} preload="metadata" muted playsInline />
+                  <div
+                    className="entry-viewer-hero"
+                    role="button"
+                    tabIndex={0}
+                    onClick={handleHeroClick}
+                    onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openFullscreen(activeMediaIndex); } }}
+                    onTouchStart={handleGalleryTouchStart}
+                    onTouchEnd={handleGalleryTouchEnd}
+                    aria-label="Открыть фото на весь экран"
+                  >
+                    {activeMedia.mediaType === "video" ? (
+                      <video src={getSafeAppFileUrl(activeMedia.url)} preload="metadata" muted playsInline />
                     ) : (
-                      <img src={getSafeAppFileUrl(media[0].url)} alt={entry.title || "Фото записи"} loading="lazy" decoding="async" />
+                      <img src={getSafeAppFileUrl(activeMedia.url)} alt={entry.title || "Фото записи"} loading="lazy" decoding="async" />
                     )}
-                    {media.length > 1 && <span className="entry-viewer-counter">1 / {media.length}</span>}
-                  </button>
+                    {media.length > 1 && (
+                      <>
+                        <button
+                          className="entry-viewer-hero-nav entry-viewer-hero-nav--prev"
+                          type="button"
+                          onClick={showPreviousMedia}
+                          aria-label="Предыдущее медиа"
+                        >
+                          ‹
+                        </button>
+                        <button
+                          className="entry-viewer-hero-nav entry-viewer-hero-nav--next"
+                          type="button"
+                          onClick={showNextMedia}
+                          aria-label="Следующее медиа"
+                        >
+                          ›
+                        </button>
+                        <span className="entry-viewer-counter">{activeMediaIndex + 1} / {media.length}</span>
+                      </>
+                    )}
+                  </div>
 
                   {media.length > 1 && (
-                    <div className="entry-viewer-thumbs">
-                      {media.slice(0, 5).map((item, index) => {
+                    <div className="entry-viewer-thumbs" aria-label="Медиа записи">
+                      {media.map((item, index) => {
                         const isVideo = item.mediaType === "video";
                         const safeUrl = getSafeAppFileUrl(item.url);
-                        const hiddenCount = media.length - 5;
 
                         return (
                           <button
                             key={item.id}
-                            className="entry-viewer-thumb"
+                            className={`entry-viewer-thumb ${index === activeMediaIndex ? "is-active" : ""}`}
                             type="button"
-                            onClick={() => openFullscreen(index)}
-                            aria-label={`Открыть медиа ${index + 1}`}
+                            onClick={() => selectMedia(index)}
+                            aria-label={`Показать медиа ${index + 1}`}
+                            aria-current={index === activeMediaIndex ? "true" : undefined}
                           >
                             {isVideo ? (
                               <video src={safeUrl} preload="metadata" muted playsInline />
                             ) : (
                               <img src={safeUrl} alt="Миниатюра записи" loading="lazy" decoding="async" />
                             )}
-                            {index === 4 && hiddenCount > 0 && <span className="entry-viewer-thumb-more">+{hiddenCount}</span>}
                           </button>
                         );
                       })}

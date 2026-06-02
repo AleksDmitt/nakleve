@@ -191,10 +191,12 @@ export default function ChatDetailsPage() {
     }
 
     window.addEventListener("resize", keepPageAtLeft);
+    window.addEventListener("scroll", keepPageAtLeft, { passive: true });
     window.visualViewport?.addEventListener("resize", keepPageAtLeft);
 
     return () => {
       window.removeEventListener("resize", keepPageAtLeft);
+      window.removeEventListener("scroll", keepPageAtLeft);
       window.visualViewport?.removeEventListener("resize", keepPageAtLeft);
       root.classList.remove("chat-details-document");
       body.classList.remove("chat-details-document");

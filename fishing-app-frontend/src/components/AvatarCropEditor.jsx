@@ -1,7 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 const AVATAR_CROP_OUTPUT_SIZE = 512;
+const AVATAR_CROP_MAX_ZOOM = 3;
+const AVATAR_CROP_MIN_FALLBACK = 0.76;
+const AVATAR_CROP_WHEEL_STEP = 0.0016;
+const AVATAR_CROP_MIN_ZOOM_EPSILON = 0.015;
 
 function clampNumber(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -44,6 +48,12 @@ function canvasToBlob(canvas, type = "image/jpeg", quality = 0.92) {
       }
     }, type, quality);
   });
+}
+
+function getPointerDistance(firstPointer, secondPointer) {
+  if (!firstPointer || !secondPointer) return 0;
+
+  return Math.hypot(firstPointer.clientX - secondPointer.clientX, firstPointer.clientY - secondPointer.clientY);
 }
 
 async function createCroppedAvatarFile(imageUrl, imageElement, cropElement, fileName) {
@@ -110,16 +120,58 @@ export default function AvatarCropEditor({
   const cropRef = useRef(null);
   const imageRef = useRef(null);
   const dragRef = useRef(null);
-  const [zoom, setZoom] = useState(1);
-  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const activePointersRef = useRef(new Map());
+  const pinchRef = useRef(null);
+  const zoomRef = useRef(1);
+  const minZoomRef = useRef(AVATAR_CROP_MIN_FALLBACK);
+  const positionRef = useRef({ x: 0, y: 0 });
+  const [zoom, setZoomState] = useState(1);
+  const [minZoom, setMinZoomState] = useState(AVATAR_CROP_MIN_FALLBACK);
+  const [position, setPositionState] = useState({ x: 0, y: 0 });
   const [imageRatio, setImageRatio] = useState(1);
   const [error, setError] = useState("");
+
+  const imageFitClass = useMemo(() => (imageRatio >= 1 ? "is-wide" : "is-tall"), [imageRatio]);
+
+  const zoomProgress = useMemo(() => {
+    const range = AVATAR_CROP_MAX_ZOOM - minZoom;
+    if (range <= 0) return 0;
+    return clampNumber((zoom - minZoom) / range, 0, 1);
+  }, [minZoom, zoom]);
+
+  function setZoom(nextZoom) {
+    const safeZoom = clampNumber(nextZoom, minZoomRef.current, AVATAR_CROP_MAX_ZOOM);
+    zoomRef.current = safeZoom;
+    setZoomState(safeZoom);
+    return safeZoom;
+  }
+
+  function setMinZoom(nextMinZoom) {
+    const safeMinZoom = clampNumber(nextMinZoom || AVATAR_CROP_MIN_FALLBACK, 0.1, AVATAR_CROP_MAX_ZOOM);
+    minZoomRef.current = safeMinZoom;
+    setMinZoomState(safeMinZoom);
+    return safeMinZoom;
+  }
+
+  function setPosition(nextPosition, nextZoom = zoomRef.current) {
+    const safePosition = clampCropPosition(nextPosition, nextZoom);
+    positionRef.current = safePosition;
+    setPositionState(safePosition);
+    return safePosition;
+  }
 
   useEffect(() => {
     if (!isOpen) return;
 
-    setZoom(1);
-    setPosition({ x: 0, y: 0 });
+    activePointersRef.current.clear();
+    dragRef.current = null;
+    pinchRef.current = null;
+    zoomRef.current = 1;
+    minZoomRef.current = AVATAR_CROP_MIN_FALLBACK;
+    positionRef.current = { x: 0, y: 0 };
+    setZoomState(1);
+    setMinZoomState(AVATAR_CROP_MIN_FALLBACK);
+    setPositionState({ x: 0, y: 0 });
     setImageRatio(1);
     setError("");
   }, [isOpen, imageUrl]);
@@ -143,9 +195,43 @@ export default function AvatarCropEditor({
     };
   }, [isOpen, onClose, saving]);
 
+  useEffect(() => {
+    if (!isOpen) return undefined;
+
+    function updateMinZoomFromLayout() {
+      const wasAtMinimum = zoomRef.current <= minZoomRef.current + AVATAR_CROP_MIN_ZOOM_EPSILON;
+      const nextMinZoom = getCalculatedMinZoom();
+      const safeMinZoom = setMinZoom(nextMinZoom);
+      const nextZoom = wasAtMinimum ? safeMinZoom : Math.max(zoomRef.current, safeMinZoom);
+      setZoom(nextZoom);
+      setPosition(positionRef.current, nextZoom);
+    }
+
+    updateMinZoomFromLayout();
+    window.addEventListener("resize", updateMinZoomFromLayout);
+    return () => window.removeEventListener("resize", updateMinZoomFromLayout);
+  }, [isOpen, imageRatio]);
+
   if (!isOpen || !imageUrl || typeof document === "undefined") return null;
 
-  function getCropLimits(nextZoom = zoom) {
+  function getCalculatedMinZoom() {
+    const stageRect = stageRef.current?.getBoundingClientRect();
+    const cropRect = cropRef.current?.getBoundingClientRect();
+
+    if (!stageRect || !cropRect || !stageRect.width || !cropRect.width) {
+      return AVATAR_CROP_MIN_FALLBACK;
+    }
+
+    const baseDimensions = getAvatarBaseDimensions(stageRect.width, imageRatio || 1);
+
+    if (!baseDimensions.width || !baseDimensions.height) {
+      return AVATAR_CROP_MIN_FALLBACK;
+    }
+
+    return Math.max(cropRect.width / baseDimensions.width, cropRect.height / baseDimensions.height);
+  }
+
+  function getCropLimits(nextZoom = zoomRef.current) {
     const stageRect = stageRef.current?.getBoundingClientRect();
     const cropRect = cropRef.current?.getBoundingClientRect();
 
@@ -160,7 +246,7 @@ export default function AvatarCropEditor({
     };
   }
 
-  function clampCropPosition(nextPosition, nextZoom = zoom) {
+  function clampCropPosition(nextPosition, nextZoom = zoomRef.current) {
     const limits = getCropLimits(nextZoom);
     return {
       x: clampNumber(nextPosition.x, -limits.x, limits.x),
@@ -183,15 +269,41 @@ export default function AvatarCropEditor({
 
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
+    activePointersRef.current.set(event.pointerId, { clientX: event.clientX, clientY: event.clientY });
+
+    const pointers = Array.from(activePointersRef.current.values());
+    if (pointers.length >= 2) {
+      const distance = getPointerDistance(pointers[0], pointers[1]);
+      pinchRef.current = {
+        startDistance: distance || 1,
+        startZoom: zoomRef.current,
+      };
+      dragRef.current = null;
+      return;
+    }
+
     dragRef.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
-      startPosition: position,
+      startPosition: positionRef.current,
     };
   }
 
   function handlePointerMove(event) {
+    if (!activePointersRef.current.has(event.pointerId)) return;
+
+    activePointersRef.current.set(event.pointerId, { clientX: event.clientX, clientY: event.clientY });
+    const pointers = Array.from(activePointersRef.current.values());
+
+    if (pointers.length >= 2 && pinchRef.current) {
+      event.preventDefault();
+      const distance = getPointerDistance(pointers[0], pointers[1]);
+      const nextZoom = setZoom(pinchRef.current.startZoom * (distance / pinchRef.current.startDistance));
+      setPosition(positionRef.current, nextZoom);
+      return;
+    }
+
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
 
@@ -200,20 +312,34 @@ export default function AvatarCropEditor({
       y: drag.startPosition.y + event.clientY - drag.startY,
     };
 
-    setPosition(clampCropPosition(nextPosition));
+    setPosition(nextPosition);
   }
 
   function handlePointerUp(event) {
+    activePointersRef.current.delete(event.pointerId);
+
     if (dragRef.current?.pointerId === event.pointerId) {
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
       dragRef.current = null;
     }
+
+    if (activePointersRef.current.size < 2) {
+      pinchRef.current = null;
+    }
+
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+  }
+
+  function handleWheel(event) {
+    if (saving) return;
+
+    event.preventDefault();
+    const nextZoom = setZoom(zoomRef.current - event.deltaY * AVATAR_CROP_WHEEL_STEP);
+    setPosition(positionRef.current, nextZoom);
   }
 
   function handleZoomChange(event) {
-    const nextZoom = Number(event.target.value);
-    setZoom(nextZoom);
-    setPosition((current) => clampCropPosition(current, nextZoom));
+    const nextZoom = setZoom(Number(event.target.value));
+    setPosition(positionRef.current, nextZoom);
   }
 
   async function handleApply() {
@@ -229,8 +355,6 @@ export default function AvatarCropEditor({
     }
   }
 
-  const imageFitClass = imageRatio >= 1 ? "is-wide" : "is-tall";
-
   return createPortal(
     <div className="profile-avatar-crop-backdrop" role="dialog" aria-modal="true" aria-label="Настройка аватара">
       <div className="profile-avatar-crop-modal">
@@ -239,7 +363,7 @@ export default function AvatarCropEditor({
             <p className="profile-avatar-crop-modal__kicker">{kicker}</p>
             <h2>{title}</h2>
           </div>
-          <button className="profile-avatar-crop-modal__close" type="button" onClick={onClose} disabled={saving}>
+          <button className="profile-avatar-crop-modal__close" type="button" onClick={onClose} disabled={saving} aria-label="Закрыть">
             ×
           </button>
         </div>
@@ -249,6 +373,7 @@ export default function AvatarCropEditor({
         <div
           className="profile-avatar-crop-modal__stage"
           ref={stageRef}
+          onWheel={handleWheel}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -270,14 +395,17 @@ export default function AvatarCropEditor({
           <div className="profile-avatar-crop-modal__circle" ref={cropRef} aria-hidden="true" />
         </div>
 
-        <label className="profile-avatar-crop-modal__zoom">
+        <label
+          className="profile-avatar-crop-modal__zoom"
+          style={{ "--avatar-zoom-progress": `${zoomProgress * 100}%` }}
+        >
           <span>Масштаб</span>
           <input
             type="range"
-            min="1"
-            max="3"
+            min={minZoom}
+            max={AVATAR_CROP_MAX_ZOOM}
             step="0.01"
-            value={zoom}
+            value={clampNumber(zoom, minZoom, AVATAR_CROP_MAX_ZOOM)}
             onChange={handleZoomChange}
             disabled={saving}
           />

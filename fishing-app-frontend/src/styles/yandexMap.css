@@ -310,3 +310,17 @@
     transform: none !important;
   }
 }
+
+/* ===== YandexMap v12: entry editor map type switcher near map edge ===== */
+.profile-location-map-wrapper .yandex-map-type-switcher {
+  top: 10px !important;
+  left: 10px !important;
+  right: auto !important;
+}
+
+@media (min-width: 761px) {
+  .profile-location-map-wrapper .yandex-map-type-switcher {
+    top: 12px !important;
+    left: 12px !important;
+  }
+}

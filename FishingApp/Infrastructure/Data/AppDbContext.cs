@@ -149,7 +149,7 @@ public class AppDbContext : IdentityDbContext<AppUser, Microsoft.AspNetCore.Iden
                 .HasMaxLength(200);
 
             entity.Property(x => x.Description)
-                .HasMaxLength(2000);
+                .HasMaxLength(5000);
 
             entity.Property(x => x.FishingStartedAt)
                 .IsRequired();
@@ -168,7 +168,7 @@ public class AppDbContext : IdentityDbContext<AppUser, Microsoft.AspNetCore.Iden
                 .HasPrecision(10, 2);
 
             entity.Property(x => x.Bait)
-                .HasMaxLength(100);
+                .HasMaxLength(1000);
 
             entity.Property(x => x.WeatherSummary)
                 .HasMaxLength(300);

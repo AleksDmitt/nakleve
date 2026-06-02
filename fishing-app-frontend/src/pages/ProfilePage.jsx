@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import YandexMap from "../components/YandexMap";
 import AvatarUploader from "../components/AvatarUploader";
 import MediaLightbox from "../components/MediaLightbox";
 import FishingEntryDetailsModal from "../components/FishingEntryDetailsModal";
+import EntryLocationPicker from "../components/profile/EntryLocationPicker";
 import {
   getProfile,
   updateProfile,
@@ -21,8 +21,6 @@ import {
   shareFishingEntry,
 } from "../api/fishingEntriesApi";
 import { uploadAvatar, uploadFishingMediaFiles } from "../api/uploadsApi";
-import { getMapPoints } from "../api/mapPointsApi";
-import { searchPlaces } from "../api/geocodingApi";
 import { createOrGetPersonalChat, getChats, shareFishingEntryToChat } from "../api/chatsApi";
 import {
   getFriends,
@@ -100,6 +98,9 @@ const COMPANION_RESPONSE_STATUS_LABELS = {
 
 const ENTRY_DRAFT_KEY = "fishingapp.entryDraft.v1";
 const SUPPORT_EMAIL = "rassokha.lesha@yandex.ru";
+const ENTRY_MEDIA_MAX_COUNT = 15;
+const ENTRY_BAIT_MAX_LENGTH = 1000;
+const ENTRY_DESCRIPTION_MAX_LENGTH = 5000;
 
 function getFeedEntryPath(entryId) {
   const params = new URLSearchParams({ entryId });
@@ -1897,20 +1898,9 @@ function EntryEditorModal({ isOpen, mode, entry, onClose, onSubmit, saving }) {
   const [form, setForm] = useState(EMPTY_ENTRY_FORM);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [localMessage, setLocalMessage] = useState("");
-  const [mapCenter, setMapCenter] = useState([27.5667, 53.9]);
-  const [userLocation, setUserLocation] = useState(null);
-  const [savedPoints, setSavedPoints] = useState([]);
-  const [savedPointQuery, setSavedPointQuery] = useState("");
-  const [savedPointsOpen, setSavedPointsOpen] = useState(false);
-  const [savedPointsLoading, setSavedPointsLoading] = useState(false);
-  const [placeQuery, setPlaceQuery] = useState("");
-  const [placeResults, setPlaceResults] = useState([]);
-  const [placeResultsOpen, setPlaceResultsOpen] = useState(false);
-  const [placeSearchLoading, setPlaceSearchLoading] = useState(false);
   const [draftRestored, setDraftRestored] = useState(false);
   const [initialFormSnapshot, setInitialFormSnapshot] = useState(JSON.stringify(EMPTY_ENTRY_FORM));
   const [isMobileKeyboardOpen, setIsMobileKeyboardOpen] = useState(false);
-  const locationSearchRef = useRef(null);
 
   useEffect(() => {
     if (!isOpen) {
@@ -1973,9 +1963,6 @@ function EntryEditorModal({ isOpen, mode, entry, onClose, onSubmit, saving }) {
       setForm(nextForm);
       setInitialFormSnapshot(JSON.stringify(nextForm));
 
-      if (entry.latitude != null && entry.longitude != null) {
-        setMapCenter([Number(entry.longitude), Number(entry.latitude)]);
-      }
     } else {
       const today = toLocalDateInput(new Date());
       const baseForm = {
@@ -1995,110 +1982,10 @@ function EntryEditorModal({ isOpen, mode, entry, onClose, onSubmit, saving }) {
       setInitialFormSnapshot(JSON.stringify(baseForm));
       setDraftRestored(Boolean(shouldRestoreDraft));
 
-      if (nextForm.latitude !== "" && nextForm.longitude !== "") {
-        setMapCenter([Number(nextForm.longitude), Number(nextForm.latitude)]);
-      }
     }
 
     setLocalMessage("");
   }, [entry, isOpen]);
-
-  useEffect(() => {
-    if (!isOpen) return undefined;
-
-    let cancelled = false;
-
-    async function loadSavedPoints() {
-      try {
-        setSavedPointsLoading(true);
-        const points = await getMapPoints();
-
-        if (!cancelled) {
-          setSavedPoints(Array.isArray(points) ? points : []);
-        }
-      } catch (err) {
-        console.error(err);
-
-        if (!cancelled) {
-          setSavedPoints([]);
-          setLocalMessage(`Не удалось загрузить сохранённые точки: ${err.message}`);
-        }
-      } finally {
-        if (!cancelled) {
-          setSavedPointsLoading(false);
-        }
-      }
-    }
-
-    loadSavedPoints();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen]);
-
-  useEffect(() => {
-    if (!savedPointsOpen && !placeResultsOpen) return undefined;
-
-    function handleOutsideClick(event) {
-      if (!locationSearchRef.current?.contains(event.target)) {
-        setSavedPointsOpen(false);
-        setPlaceResultsOpen(false);
-      }
-    }
-
-    document.addEventListener("mousedown", handleOutsideClick);
-    document.addEventListener("touchstart", handleOutsideClick);
-
-    return () => {
-      document.removeEventListener("mousedown", handleOutsideClick);
-      document.removeEventListener("touchstart", handleOutsideClick);
-    };
-  }, [savedPointsOpen, placeResultsOpen]);
-
-  useEffect(() => {
-    if (!isOpen) return undefined;
-
-    const normalizedQuery = placeQuery.trim();
-
-    if (normalizedQuery.length < 2) {
-      setPlaceResults([]);
-      setPlaceSearchLoading(false);
-      return undefined;
-    }
-
-    setPlaceResultsOpen(true);
-
-    let cancelled = false;
-    const timer = window.setTimeout(async () => {
-      try {
-        setPlaceSearchLoading(true);
-        const results = await searchPlaces(normalizedQuery);
-
-        if (!cancelled) {
-          setPlaceResults(Array.isArray(results) ? results.filter(Boolean) : []);
-        }
-      } catch (err) {
-        console.error(err);
-
-        if (!cancelled) {
-          setPlaceResults([]);
-          setLocalMessage(`Не удалось выполнить поиск места: ${err.message}`);
-        }
-      } finally {
-        if (!cancelled) {
-          setPlaceSearchLoading(false);
-        }
-      }
-    }, 350);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [isOpen, placeQuery]);
-
-
 
   const hasUnsavedChanges = mode === "create"
     ? JSON.stringify(form) !== initialFormSnapshot && !isEntryFormEmpty(form)
@@ -2201,14 +2088,30 @@ function EntryEditorModal({ isOpen, mode, entry, onClose, onSubmit, saving }) {
     const files = Array.from(event.target.files || []);
     if (files.length === 0) return;
 
+    const currentCount = Array.isArray(form.media) ? form.media.length : 0;
+    const freeSlots = ENTRY_MEDIA_MAX_COUNT - currentCount;
+
+    if (freeSlots <= 0) {
+      setLocalMessage(`В одну запись можно добавить не больше ${ENTRY_MEDIA_MAX_COUNT} медиа.`);
+      event.target.value = "";
+      return;
+    }
+
+    const filesToUpload = files.slice(0, freeSlots);
+
+    if (files.length > freeSlots) {
+      setLocalMessage(`Добавлю только ${freeSlots} из ${files.length}: лимит записи — ${ENTRY_MEDIA_MAX_COUNT} медиа.`);
+    } else {
+      setLocalMessage("");
+    }
+
     try {
       setUploadingPhoto(true);
-      setLocalMessage("");
-      const uploaded = await uploadFishingMediaFiles(files);
+      const uploaded = await uploadFishingMediaFiles(filesToUpload);
 
       setForm((current) => {
         const currentMedia = Array.isArray(current.media) ? current.media : [];
-        const nextMedia = [...currentMedia, ...uploaded].map((item, index) => ({
+        const nextMedia = [...currentMedia, ...uploaded].slice(0, ENTRY_MEDIA_MAX_COUNT).map((item, index) => ({
           ...item,
           sortOrder: index,
         }));
@@ -2220,6 +2123,10 @@ function EntryEditorModal({ isOpen, mode, entry, onClose, onSubmit, saving }) {
           photoUrl: firstImage?.url || "",
         };
       });
+
+      if (files.length <= freeSlots) {
+        setLocalMessage("");
+      }
 
       event.target.value = "";
     } catch (err) {
@@ -2245,105 +2152,6 @@ function EntryEditorModal({ isOpen, mode, entry, onClose, onSubmit, saving }) {
     });
   }
 
-  function handleDetectLocation() {
-    if (!navigator.geolocation) {
-      setLocalMessage("Геолокация не поддерживается браузером.");
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const latitude = Number(position.coords.latitude.toFixed(6));
-        const longitude = Number(position.coords.longitude.toFixed(6));
-
-        setUserLocation({ latitude, longitude });
-        setForm((current) => ({
-          ...current,
-          latitude: latitude.toString(),
-          longitude: longitude.toString(),
-          locationName: current.locationName || "Моё местоположение",
-        }));
-        setMapCenter([longitude, latitude]);
-        setLocalMessage("Координаты добавлены.");
-      },
-      () => setLocalMessage("Не удалось определить местоположение."),
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-    );
-  }
-
-  function handleMapClick(latlng) {
-    const latitude = Number(latlng.lat.toFixed(6));
-    const longitude = Number(latlng.lng.toFixed(6));
-
-    setForm((current) => ({
-      ...current,
-      latitude: latitude.toString(),
-      longitude: longitude.toString(),
-      locationName: current.locationName || "Выбранная точка",
-    }));
-  }
-
-  const normalizedSavedPointQuery = savedPointQuery.trim().toLowerCase();
-  const filteredSavedPoints = savedPoints
-    .filter((point) => {
-      if (!normalizedSavedPointQuery) return true;
-
-      const searchableText = [
-        point.name,
-        point.region,
-        point.description,
-        point.typeName,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-
-      return searchableText.includes(normalizedSavedPointQuery);
-    })
-    .slice(0, 8);
-
-  function selectEntryLocation({ name, address, region, latitude, longitude }) {
-    if (latitude == null || longitude == null) {
-      setLocalMessage("У выбранного места нет координат.");
-      return;
-    }
-
-    const nextLatitude = Number(latitude);
-    const nextLongitude = Number(longitude);
-
-    if (!Number.isFinite(nextLatitude) || !Number.isFinite(nextLongitude)) {
-      setLocalMessage("У выбранного места некорректные координаты.");
-      return;
-    }
-
-    const locationName = name || address || region || "Выбранная точка";
-
-    setForm((current) => ({
-      ...current,
-      locationName,
-      latitude: nextLatitude.toFixed(6),
-      longitude: nextLongitude.toFixed(6),
-    }));
-
-    setMapCenter([nextLongitude, nextLatitude]);
-    setSavedPointsOpen(false);
-    setPlaceResultsOpen(false);
-    setLocalMessage("Место ловли выбрано.");
-  }
-
-  const selectedMapPoint = form.latitude !== "" && form.longitude !== ""
-    ? [{
-        id: "entry-location-point",
-        name: form.locationName || "Место ловли",
-        latitude: Number(form.latitude),
-        longitude: Number(form.longitude),
-        type: 0,
-        region: null,
-        description: "Точка из записи о рыбалке",
-      }]
-    : [];
-
-
   async function handleSubmit(event) {
     event.preventDefault();
 
@@ -2363,6 +2171,21 @@ function EntryEditorModal({ isOpen, mode, entry, onClose, onSubmit, saving }) {
 
     if (endDateTime && new Date(endDateTime).getTime() < new Date(startDateTime).getTime()) {
       setLocalMessage("Окончание рыбалки не может быть раньше начала.");
+      return;
+    }
+
+    if ((form.media || []).length > ENTRY_MEDIA_MAX_COUNT) {
+      setLocalMessage(`В одну запись можно добавить не больше ${ENTRY_MEDIA_MAX_COUNT} медиа.`);
+      return;
+    }
+
+    if ((form.bait || "").trim().length > ENTRY_BAIT_MAX_LENGTH) {
+      setLocalMessage(`Поле «Наживка» — максимум ${ENTRY_BAIT_MAX_LENGTH} символов.`);
+      return;
+    }
+
+    if ((form.description || "").trim().length > ENTRY_DESCRIPTION_MAX_LENGTH) {
+      setLocalMessage(`Описание — максимум ${ENTRY_DESCRIPTION_MAX_LENGTH} символов.`);
       return;
     }
 
@@ -2389,7 +2212,13 @@ function EntryEditorModal({ isOpen, mode, entry, onClose, onSubmit, saving }) {
     };
 
     const saved = await onSubmit(payload);
-    if (saved !== false && mode === "create") {
+
+    if (saved?.ok === false || saved === false) {
+      setLocalMessage(saved?.message || "Не удалось сохранить запись. Проверь поля и попробуй ещё раз.");
+      return;
+    }
+
+    if (mode === "create") {
       clearEntryDraft();
       setDraftRestored(false);
     }
@@ -2443,7 +2272,7 @@ function EntryEditorModal({ isOpen, mode, entry, onClose, onSubmit, saving }) {
 
           <label>
             Наживка
-            <input name="bait" value={form.bait} onChange={handleChange} />
+            <input name="bait" value={form.bait} onChange={handleChange} maxLength={ENTRY_BAIT_MAX_LENGTH} />
           </label>
 
 
@@ -2527,7 +2356,7 @@ function EntryEditorModal({ isOpen, mode, entry, onClose, onSubmit, saving }) {
 
         <label className="profile-full-field">
           Описание
-          <textarea name="description" value={form.description} onChange={handleChange} />
+          <textarea name="description" value={form.description} onChange={handleChange} maxLength={ENTRY_DESCRIPTION_MAX_LENGTH} />
         </label>
 
         <div className="profile-entry-media-picker">
@@ -2553,13 +2382,13 @@ function EntryEditorModal({ isOpen, mode, entry, onClose, onSubmit, saving }) {
 
           <p className="profile-entry-media-picker__note">
             {Array.isArray(form.media) && form.media.length > 0
-              ? `Добавлено: ${form.media.length}. Первое фото будет обложкой записи.`
-              : "Первое фото будет обложкой записи."}
+              ? `Добавлено: ${form.media.length} из ${ENTRY_MEDIA_MAX_COUNT}. Первое фото будет обложкой записи.`
+              : `Можно добавить до ${ENTRY_MEDIA_MAX_COUNT} фото или видео. Первое фото будет обложкой записи.`}
           </p>
         </div>
 
         {uploadingPhoto && <p className="muted-text">Загружаем медиа...</p>}
-        {localMessage && <p className={localMessage.includes("Не удалось") || localMessage.includes("не поддерживается") || localMessage.includes("не может быть") || localMessage.includes("Укажи") || localMessage.includes("Для многодневной") || localMessage.includes("Окончание") ? "error-text" : "success-text"}>{localMessage}</p>}
+        {localMessage && <p className={localMessage.includes("Не удалось") || localMessage.includes("не поддерживается") || localMessage.includes("не может быть") || localMessage.includes("Укажи") || localMessage.includes("Для многодневной") || localMessage.includes("Окончание") || localMessage.includes("лимит") || localMessage.includes("максимум") || localMessage.includes("не больше") ? "error-text" : "success-text"}>{localMessage}</p>}
         {Array.isArray(form.media) && form.media.length > 0 && (
           <div className="profile-media-upload-list">
             {form.media.map((item, index) => (
@@ -2583,137 +2412,12 @@ function EntryEditorModal({ isOpen, mode, entry, onClose, onSubmit, saving }) {
           </div>
         )}
 
-        <section className="profile-location-picker">
-          <div className="profile-location-picker-header">
-            <div>
-              <p className="profile-kicker">Место ловли</p>
-              <h3>Выбор точки на карте</h3>
-            </div>
-          </div>
-
-          <div className="profile-saved-points-search" ref={locationSearchRef}>
-            <div>
-              <strong>Поиск места</strong>
-              <p>Выбери сохранённую точку или найди новое место через поиск по карте.</p>
-            </div>
-
-            <div className="profile-location-search-grid">
-              <div className="profile-location-search-field profile-location-search-field-dropdown">
-                <span>Сохранённые точки</span>
-                <input
-                  value={savedPointQuery}
-                  onChange={(event) => {
-                    setSavedPointQuery(event.target.value);
-                    setSavedPointsOpen(true);
-                    setPlaceResultsOpen(false);
-                  }}
-                  onFocus={() => {
-                    setSavedPointsOpen(true);
-                    setPlaceResultsOpen(false);
-                  }}
-                  placeholder={savedPointsLoading ? "Загружаем точки..." : "Название, регион или описание точки"}
-                  autoComplete="off"
-                />
-
-                {savedPointsOpen && (
-                  <div className="profile-location-search-dropdown profile-location-search-dropdown-single">
-                    <div className="profile-location-search-title">
-                      Сохранённые точки
-                    </div>
-
-                    {savedPointsLoading ? (
-                      <div className="profile-location-search-empty">Загружаем...</div>
-                    ) : filteredSavedPoints.length === 0 ? (
-                      <div className="profile-location-search-empty">
-                        {savedPointQuery.trim() ? "Точки не найдены" : "Сохранённых точек пока нет"}
-                      </div>
-                    ) : (
-                      filteredSavedPoints.map((point) => (
-                        <button
-                          key={point.id}
-                          className="profile-location-search-option"
-                          type="button"
-                          onClick={() => selectEntryLocation(point)}
-                        >
-                          <strong>{point.name || "Точка без названия"}</strong>
-                          <span>{point.region || point.description || "Сохранённая точка"}</span>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <div className="profile-location-search-field profile-location-search-field-dropdown">
-                <span>Поиск места</span>
-                <input
-                  value={placeQuery}
-                  onChange={(event) => {
-                    setPlaceQuery(event.target.value);
-                    setPlaceResultsOpen(true);
-                    setSavedPointsOpen(false);
-                  }}
-                  onFocus={() => {
-                    setPlaceResultsOpen(true);
-                    setSavedPointsOpen(false);
-                  }}
-                  placeholder="Например: озеро, река, деревня"
-                  autoComplete="off"
-                />
-
-                {placeResultsOpen && (
-                  <div className="profile-location-search-dropdown profile-location-search-dropdown-single">
-                    <div className="profile-location-search-title">
-                      Найденные места
-                    </div>
-
-                    {placeSearchLoading ? (
-                      <div className="profile-location-search-empty">Ищем...</div>
-                    ) : placeQuery.trim().length < 2 ? (
-                      <div className="profile-location-search-empty">Введите минимум 2 символа</div>
-                    ) : placeResults.length === 0 ? (
-                      <div className="profile-location-search-empty">Места не найдены</div>
-                    ) : (
-                      placeResults.map((place, index) => (
-                        <button
-                          key={`${place.latitude}-${place.longitude}-${index}`}
-                          className="profile-location-search-option"
-                          type="button"
-                          onClick={() => selectEntryLocation(place)}
-                        >
-                          <strong>{place.name || "Место на карте"}</strong>
-                          <span>{place.address || place.description || place.region || "Найдено через геокодер"}</span>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className="profile-location-map-wrapper">
-            <YandexMap
-              points={selectedMapPoint}
-              userLocation={userLocation}
-              onMapClick={handleMapClick}
-              onLocationClick={handleDetectLocation}
-              center={mapCenter}
-              zoom={8}
-            />
-          </div>
-
-          <div className="profile-location-selected">
-            <div>
-              <span>Широта</span>
-              <strong>{form.latitude || "—"}</strong>
-            </div>
-            <div>
-              <span>Долгота</span>
-              <strong>{form.longitude || "—"}</strong>
-            </div>
-          </div>
-        </section>
+        <EntryLocationPicker
+          isOpen={isOpen}
+          form={form}
+          setForm={setForm}
+          setLocalMessage={setLocalMessage}
+        />
 
         <label className={`profile-publish-card ${form.isPublishedToFeed ? "active" : ""} ${Number(form.visibility) !== 1 ? "disabled" : ""}`}>
           <input
@@ -3183,11 +2887,12 @@ export default function ProfilePage() {
       setEntryModalOpen(false);
       setSelectedEntry(null);
       await loadEntries();
-      return true;
+      return { ok: true };
     } catch (err) {
       console.error(err);
-      showMessage(`Не удалось сохранить запись: ${err.message}`, true);
-      return false;
+      const message = err?.message || "Не удалось сохранить запись.";
+      showMessage(`Не удалось сохранить запись: ${message}`, true);
+      return { ok: false, message: `Не удалось сохранить запись: ${message}` };
     } finally {
       setEntrySaving(false);
     }

@@ -19,6 +19,7 @@ namespace FishingApp.Api.Controllers;
 [Authorize]
 public class FishingEntriesController : ControllerBase
 {
+    private const int MaxFishingEntryMediaCount = 15;
     private readonly AppDbContext _context;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IHubContext<ChatHub> _chatHub;
@@ -824,8 +825,8 @@ public class FishingEntriesController : ControllerBase
             .Where(x => !string.IsNullOrWhiteSpace(x.Url))
             .ToList();
 
-        if (filledMedia.Count > 10)
-            return BadRequest(new { message = "К одной записи можно прикрепить не больше 10 файлов." });
+        if (filledMedia.Count > MaxFishingEntryMediaCount)
+            return BadRequest(new { message = $"К одной записи можно прикрепить не больше {MaxFishingEntryMediaCount} файлов." });
 
         foreach (var item in filledMedia)
         {
