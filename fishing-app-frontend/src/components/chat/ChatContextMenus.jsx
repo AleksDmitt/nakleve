@@ -36,6 +36,8 @@ export default function ChatContextMenus({
   contextMenu,
   chatItemMenu,
   startReply,
+  handleForwardMessage,
+  handleSelectMessages,
   handleDeleteMessage,
   canDeleteMessageForAll,
   user,
@@ -48,8 +50,14 @@ export default function ChatContextMenus({
   handleToggleChatMuted,
   handleOpenChatSettings,
 }) {
+  const messageMenuHeight = contextMenu?.message?.isDeletedForAll
+    ? 58
+    : canDeleteMessageForAll
+      ? 250
+      : 204;
+
   const messageMenuPosition = contextMenu
-    ? getMenuPosition(contextMenu.x, contextMenu.y, 230, canDeleteMessageForAll ? 150 : 105)
+    ? getMenuPosition(contextMenu.x, contextMenu.y, 230, messageMenuHeight)
     : null;
 
   const chatMenuPosition = chatItemMenu
@@ -79,13 +87,37 @@ export default function ChatContextMenus({
           onClick={(e) => e.stopPropagation()}
         >
           {!contextMenu.message.isDeletedForAll && (
-            <button
-              type="button"
-              onClick={() => startReply(contextMenu.message)}
-              style={menuButtonStyle}
-            >
-              Ответить
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => startReply(contextMenu.message)}
+                style={menuButtonStyle}
+              >
+                Ответить
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleForwardMessage?.(contextMenu.message)}
+                style={{
+                  ...menuButtonStyle,
+                  borderTop: "1px solid rgba(255,255,255,0.08)",
+                }}
+              >
+                Переслать
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSelectMessages?.(contextMenu.message)}
+                style={{
+                  ...menuButtonStyle,
+                  borderTop: "1px solid rgba(255,255,255,0.08)",
+                }}
+              >
+                Выбрать
+              </button>
+            </>
           )}
 
           <button

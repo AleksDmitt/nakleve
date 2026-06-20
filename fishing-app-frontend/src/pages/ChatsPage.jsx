@@ -7,6 +7,8 @@ import {
   markChatAsReadUntil,
   markVoiceMessageAsListened,
   deleteChatMessage,
+  forwardChatMessage,
+  forwardChatMessages,
   uploadChatAttachment,
   deletePrivateChatForMe,
   deletePrivateChatForAll,
@@ -30,6 +32,7 @@ import ChatMessagesList from "../components/chat/ChatMessagesList";
 import ChatComposer from "../components/chat/ChatComposer";
 import ChatContextMenus from "../components/chat/ChatContextMenus";
 import CreateGroupChatModal from "../components/chat/CreateGroupChatModal";
+import ForwardMessageModal from "../components/chat/ForwardMessageModal";
 import EmptyState from "../components/chat/EmptyState";
 
 import {
@@ -130,6 +133,9 @@ export default function ChatsPage() {
   const [highlightedMessageId, setHighlightedMessageId] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
   const [chatItemMenu, setChatItemMenu] = useState(null);
+  const [forwardingMessages, setForwardingMessages] = useState([]);
+  const [isMessageSelectMode, setIsMessageSelectMode] = useState(false);
+  const [selectedMessageIds, setSelectedMessageIds] = useState([]);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [groupModalOpen, setGroupModalOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() =>
@@ -170,9 +176,53 @@ export default function ChatsPage() {
   const voiceRecordingStartedRef = useRef(false);
   const currentVoiceRecordingChatIdRef = useRef(null);
   const voiceRecordingUserTimersRef = useRef(new Map());
+  const sidebarMessageTimerRef = useRef(null);
 
   const currentDraft = selectedChat?.id ? (drafts[selectedChat.id] ?? "") : "";
   const pendingFiles = selectedChat?.id ? (pendingFilesByChatId[selectedChat.id] ?? []) : [];
+
+  const selectedForwardMessages = useMemo(() => {
+    if (!Array.isArray(messages) || selectedMessageIds.length === 0) return [];
+
+    const selectedIds = new Set(selectedMessageIds.map((id) => String(id)));
+    return messages
+      .filter((msg) => selectedIds.has(String(msg.id)) && !msg.isDeletedForAll)
+      .sort((a, b) => {
+        const timeA = new Date(a.sentAt || 0).getTime();
+        const timeB = new Date(b.sentAt || 0).getTime();
+
+        if (timeA !== timeB) return timeA - timeB;
+        return String(a.id).localeCompare(String(b.id));
+      });
+  }, [messages, selectedMessageIds]);
+
+  useEffect(() => {
+    if (!isMessageSelectMode || forwardingMessages.length > 0) return;
+
+    function handleSelectionKeyDown(event) {
+      if (event.key !== "Escape") return;
+
+      event.preventDefault();
+      cancelMessageSelection();
+    }
+
+    window.addEventListener("keydown", handleSelectionKeyDown);
+    return () => window.removeEventListener("keydown", handleSelectionKeyDown);
+  }, [isMessageSelectMode, forwardingMessages.length]);
+
+  useEffect(() => {
+    window.clearTimeout(sidebarMessageTimerRef.current);
+
+    if (!/переслан/i.test(String(message || ""))) {
+      return undefined;
+    }
+
+    sidebarMessageTimerRef.current = window.setTimeout(() => {
+      setMessage((current) => (/переслан/i.test(String(current || "")) ? "" : current));
+    }, 4200);
+
+    return () => window.clearTimeout(sidebarMessageTimerRef.current);
+  }, [message]);
 
   const activeTypingUsers = useMemo(() => {
     if (!selectedChat?.id) return [];
@@ -563,6 +613,12 @@ export default function ChatsPage() {
 
   useEffect(() => {
     selectedChatRef.current = selectedChat;
+  }, [selectedChat?.id]);
+
+  useEffect(() => {
+    setIsMessageSelectMode(false);
+    setSelectedMessageIds([]);
+    setForwardingMessages([]);
   }, [selectedChat?.id]);
 
   useEffect(() => {
@@ -1631,6 +1687,105 @@ export default function ChatsPage() {
     focusComposerSoon();
   }
 
+  function handleForwardMessage(msg) {
+    if (!msg || msg.isDeletedForAll) return;
+
+    setContextMenu(null);
+    setChatItemMenu(null);
+    setIsMessageSelectMode(false);
+    setSelectedMessageIds([]);
+    setForwardingMessages([msg]);
+  }
+
+  function handleSelectMessages(msg) {
+    if (!msg || msg.isDeletedForAll) return;
+
+    setContextMenu(null);
+    setChatItemMenu(null);
+    setIsMessageSelectMode(true);
+    setSelectedMessageIds([msg.id]);
+  }
+
+  function toggleSelectedMessage(msg) {
+    if (!msg || msg.isDeletedForAll) return;
+
+    setSelectedMessageIds((current) => {
+      const normalizedId = String(msg.id);
+      const exists = current.some((id) => String(id) === normalizedId);
+
+      if (exists) {
+        return current.filter((id) => String(id) !== normalizedId);
+      }
+
+      return [...current, msg.id];
+    });
+  }
+
+  function cancelMessageSelection() {
+    setIsMessageSelectMode(false);
+    setSelectedMessageIds([]);
+  }
+
+  function forwardSelectedMessages() {
+    if (selectedForwardMessages.length === 0) return;
+
+    setForwardingMessages(selectedForwardMessages);
+  }
+
+  function closeForwardModal() {
+    setForwardingMessages([]);
+
+    if (isMessageSelectMode) {
+      cancelMessageSelection();
+    }
+  }
+
+  async function handleForwardMessageToChats(messagesToForward, targetChatIds) {
+    const messagesList = Array.isArray(messagesToForward)
+      ? messagesToForward
+      : messagesToForward
+        ? [messagesToForward]
+        : [];
+
+    const messageIds = messagesList
+      .map((msg) => msg?.id)
+      .filter(Boolean);
+
+    if (messageIds.length === 0 || !Array.isArray(targetChatIds) || targetChatIds.length === 0) {
+      return false;
+    }
+
+    const responses = messageIds.length === 1
+      ? await forwardChatMessage(messageIds[0], targetChatIds)
+      : await forwardChatMessages(messageIds, targetChatIds);
+
+    const responseList = Array.isArray(responses) ? responses : [];
+
+    const currentChatResponses = selectedChat?.id
+      ? responseList.filter((item) => String(item.chatId) === String(selectedChat.id))
+      : [];
+
+    for (const response of currentChatResponses) {
+      appendMessageUnique(response);
+    }
+
+    await loadChats({ showLoader: false });
+
+    setIsMessageSelectMode(false);
+    setSelectedMessageIds([]);
+
+    const messagesCount = messageIds.length;
+    const chatsCount = targetChatIds.length;
+
+    if (messagesCount > 1) {
+      setMessage(`Переслано сообщений: ${messagesCount} · чатов: ${chatsCount}`);
+    } else {
+      setMessage(chatsCount > 1 ? `Сообщение переслано в ${chatsCount} чата` : "Сообщение переслано");
+    }
+
+    return true;
+  }
+
   function goToUserProfile(userId) {
     if (!userId) return;
 
@@ -2220,10 +2375,13 @@ export default function ChatsPage() {
                 maxHeight: "100%",
                 minHeight: 0,
                 display: "grid",
-                gridTemplateRows:
-                  selectedChat?.type === "Group" && groupSystemMessage
-                    ? "72px auto minmax(0, 1fr) auto"
-                    : "72px minmax(0, 1fr) auto",
+                gridTemplateRows: [
+                  "72px",
+                  selectedChat?.type === "Group" && groupSystemMessage ? "auto" : null,
+                  isMessageSelectMode ? "auto" : null,
+                  "minmax(0, 1fr)",
+                  "auto",
+                ].filter(Boolean).join(" "),
                 borderRadius: "22px",
                 overflow: "hidden",
                 background: "rgba(15, 18, 32, 0.72)",
@@ -2260,6 +2418,32 @@ export default function ChatsPage() {
                 </div>
               )}
 
+              {isMessageSelectMode && (
+                <div className="chat-message-select-toolbar">
+                  <span className="chat-message-select-count">
+                    <strong>{selectedForwardMessages.length || selectedMessageIds.length}</strong>
+                    выбрано
+                  </span>
+                  <div className="chat-message-select-actions">
+                    <button
+                      type="button"
+                      className="chat-message-select-primary"
+                      onClick={forwardSelectedMessages}
+                      disabled={selectedForwardMessages.length === 0}
+                    >
+                      Переслать
+                    </button>
+                    <button
+                      type="button"
+                      className="chat-message-select-secondary"
+                      onClick={cancelMessageSelection}
+                    >
+                      Отмена
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <ChatMessagesList
                 loadingMessages={loadingMessages}
                 messages={messages}
@@ -2279,6 +2463,9 @@ export default function ChatsPage() {
                 scrollRequest={chatScrollRequest}
                 onVisibleReadBoundary={readSelectedChatUntilMessage}
                 onVoiceMessageListened={handleVoiceMessageListened}
+                isMessageSelectMode={isMessageSelectMode}
+                selectedMessageIds={selectedMessageIds}
+                onToggleMessageSelected={toggleSelectedMessage}
               />
 
               <ChatComposer
@@ -2323,6 +2510,8 @@ export default function ChatsPage() {
         setChatItemMenu={setChatItemMenu}
         user={user}
         startReply={startReply}
+        handleForwardMessage={handleForwardMessage}
+        handleSelectMessages={handleSelectMessages}
         handleDeleteMessage={handleDeleteMessage}
         handleDeletePrivateChatForMe={handleDeletePrivateChatForMe}
         handleDeletePrivateChatForAll={handleDeletePrivateChatForAll}
@@ -2333,6 +2522,15 @@ export default function ChatsPage() {
         handleToggleChatMuted={handleToggleChatMuted}
         handleOpenChatSettings={handleOpenChatSettings}
         canDeleteMessageForAll={canDeleteMessageForAll}
+      />
+
+      <ForwardMessageModal
+        isOpen={forwardingMessages.length > 0}
+        messages={forwardingMessages}
+        chats={chats}
+        currentChatId={selectedChat?.id}
+        onClose={closeForwardModal}
+        onForward={handleForwardMessageToChats}
       />
 
       <CreateGroupChatModal

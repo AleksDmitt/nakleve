@@ -422,6 +422,9 @@ export default function ChatMessagesList({
   scrollRequest,
   onVisibleReadBoundary,
   onVoiceMessageListened,
+  isMessageSelectMode = false,
+  selectedMessageIds = [],
+  onToggleMessageSelected,
 }) {
   const navigate = useNavigate();
   const touchReplyRef = useRef(null);
@@ -1416,7 +1419,9 @@ export default function ChatMessagesList({
             const showReplyButton = hoveredMessageId === msg.id;
             const isHighlighted = highlightedMessageId === msg.id;
             const swipeDirection = isMine ? -1 : 1;
-            const isReplySwiping = replySwipe.messageId === msg.id && replySwipe.offset > 0;
+            const isReplySwiping = !isMessageSelectMode && replySwipe.messageId === msg.id && replySwipe.offset > 0;
+            const isSelectedForForward = selectedMessageIds.some((id) => String(id) === String(msg.id));
+            const canSelectMessage = !msg.isDeletedForAll;
 
             return (
               <div
@@ -1424,15 +1429,21 @@ export default function ChatMessagesList({
                 ref={(node) => {
                   if (node) messageRefs.current[msg.id] = node;
                 }}
-                onDoubleClick={() => {
-                  if (!msg.isDeletedForAll) startReply(msg);
+                onClickCapture={(event) => {
+                  if (!isMessageSelectMode || !canSelectMessage) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onToggleMessageSelected?.(msg);
                 }}
-                onContextMenu={(e) => handleContextMenu(e, msg)}
+                onDoubleClick={() => {
+                  if (!isMessageSelectMode && !msg.isDeletedForAll) startReply(msg);
+                }}
+                onContextMenu={(e) => !isMessageSelectMode && handleContextMenu(e, msg)}
                 onMouseEnter={() => setHoveredMessageId(msg.id)}
                 onMouseLeave={() => setHoveredMessageId(null)}
-                onTouchStart={(e) => handleMessageTouchStart(e, msg)}
-                onTouchMove={(e) => handleMessageTouchMove(e, msg, isMine)}
-                onTouchEnd={(e) => handleMessageTouchEnd(e, msg, isMine)}
+                onTouchStart={(e) => !isMessageSelectMode && handleMessageTouchStart(e, msg)}
+                onTouchMove={(e) => !isMessageSelectMode && handleMessageTouchMove(e, msg, isMine)}
+                onTouchEnd={(e) => !isMessageSelectMode && handleMessageTouchEnd(e, msg, isMine)}
                 onTouchCancel={() => {
                   touchReplyRef.current = null;
                   lastTapReplyRef.current = null;
@@ -1448,10 +1459,16 @@ export default function ChatMessagesList({
                     ? `translateX(${replySwipe.offset * swipeDirection}px)`
                     : "translateX(0)",
                   borderRadius: "18px",
-                  background: isHighlighted ? "rgba(255,255,255,0.08)" : "transparent",
-                  boxShadow: isHighlighted
-                    ? "0 0 0 1px rgba(255,255,255,0.08), 0 0 18px rgba(37,99,235,0.22)"
-                    : "none",
+                  background: isSelectedForForward
+                    ? "rgba(34,197,94,0.12)"
+                    : isHighlighted
+                      ? "rgba(255,255,255,0.08)"
+                      : "transparent",
+                  boxShadow: isSelectedForForward
+                    ? "0 0 0 1px rgba(34,197,94,0.28)"
+                    : isHighlighted
+                      ? "0 0 0 1px rgba(255,255,255,0.08), 0 0 18px rgba(37,99,235,0.22)"
+                      : "none",
                   padding: isHighlighted ? "6px 8px" : "0",
                 }}
               >
@@ -1489,9 +1506,49 @@ export default function ChatMessagesList({
                     </div>
                   )}
 
+
+                  {isMessageSelectMode && (
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        canSelectMessage && onToggleMessageSelected?.(msg);
+                      }}
+                      style={{
+                        width: "32px",
+                        height: "32px",
+                        padding: 0,
+                        flexShrink: 0,
+                        display: "grid",
+                        placeItems: "center",
+                        borderRadius: "50%",
+                        color: isSelectedForForward ? "#052e16" : "#cbd5e1",
+                        background: isSelectedForForward ? "#86efac" : "rgba(15,23,42,0.82)",
+                        border: isSelectedForForward
+                          ? "1px solid rgba(187,247,208,0.8)"
+                          : "1px solid rgba(148,163,184,0.28)",
+                        boxShadow: "0 10px 26px rgba(0,0,0,0.24)",
+                        cursor: canSelectMessage ? "pointer" : "not-allowed",
+                        opacity: canSelectMessage ? 1 : 0.5,
+                      }}
+                      aria-label={isSelectedForForward ? "Убрать из выбранных" : "Выбрать сообщение"}
+                    >
+                      {isSelectedForForward ? "✓" : ""}
+                    </button>
+                  )}
+
                   <button
                     type="button"
-                    onClick={() => goToUserProfile(msg.userId)}
+                    onClick={(event) => {
+                      if (isMessageSelectMode) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        canSelectMessage && onToggleMessageSelected?.(msg);
+                        return;
+                      }
+
+                      goToUserProfile(msg.userId);
+                    }}
                     style={{
                       padding: 0,
                       background: "transparent",
@@ -1580,6 +1637,48 @@ export default function ChatMessagesList({
                         >
                           {msg.userName}
                         </button>
+
+                        {msg.isForwarded && (
+                          <div
+                            style={{
+                              display: "flex",
+                              flexWrap: "wrap",
+                              alignItems: "center",
+                              gap: "4px",
+                              margin: "0 0 7px",
+                              color: "rgba(219,234,254,0.92)",
+                              fontSize: "12px",
+                              fontWeight: 800,
+                            }}
+                          >
+                            <span>↪ Переслано</span>
+                            {msg.forwardedFromUserName && (
+                              <>
+                                <span>от</span>
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    if (msg.forwardedFromUserId) {
+                                      goToUserProfile(msg.forwardedFromUserId);
+                                    }
+                                  }}
+                                  style={{
+                                    padding: 0,
+                                    border: 0,
+                                    color: "#bbf7d0",
+                                    background: "transparent",
+                                    font: "inherit",
+                                    cursor: msg.forwardedFromUserId ? "pointer" : "default",
+                                  }}
+                                  title={msg.forwardedFromUserId ? "Открыть профиль автора исходного сообщения" : undefined}
+                                >
+                                  {msg.forwardedFromUserName}
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
 
                         {msg.replyToMessageId && (
                           <button

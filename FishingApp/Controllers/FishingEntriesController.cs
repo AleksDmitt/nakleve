@@ -345,6 +345,11 @@ public class FishingEntriesController : ControllerBase
             .Take(pageSize)
             .ToListAsync();
 
+        foreach (var item in items)
+        {
+            NormalizeResponseEntryTimes(item);
+        }
+
         // Если пользователь открыл запись из чата, нужно быстро показать её,
         // даже если она находится не на первой странице ленты.
         if (page == 1 && entryId.HasValue && items.All(x => x.Id != entryId.Value))
@@ -398,7 +403,10 @@ public class FishingEntriesController : ControllerBase
                 .FirstOrDefaultAsync();
 
             if (targetEntry != null)
+            {
+                NormalizeResponseEntryTimes(targetEntry);
                 items.Insert(0, targetEntry);
+            }
         }
 
         return Ok(new FishingFeedPageResponse
@@ -776,6 +784,25 @@ public class FishingEntriesController : ControllerBase
         return userId;
     }
 
+    private static DateTime ToFloatingLocalDateTime(DateTime value)
+    {
+        // В дневнике рыбалки пользователь выбирает локальные дату и время.
+        // На фронт отдаём их без признака UTC, чтобы браузер не сдвигал 09:00 в другой часовой пояс.
+        return DateTime.SpecifyKind(value, DateTimeKind.Unspecified);
+    }
+
+    private static DateTime? ToFloatingLocalDateTime(DateTime? value)
+    {
+        return value.HasValue ? ToFloatingLocalDateTime(value.Value) : null;
+    }
+
+    private static void NormalizeResponseEntryTimes(FishingEntryResponse entry)
+    {
+        entry.FishingDate = ToFloatingLocalDateTime(entry.FishingDate);
+        entry.FishingStartedAt = ToFloatingLocalDateTime(entry.FishingStartedAt);
+        entry.FishingEndedAt = ToFloatingLocalDateTime(entry.FishingEndedAt);
+    }
+
     private static FishingEntryResponse ToResponse(FishingEntry x)
     {
         var startedAt = x.FishingStartedAt == default ? x.FishingDate : x.FishingStartedAt;
@@ -785,9 +812,9 @@ public class FishingEntriesController : ControllerBase
             Id = x.Id,
             Title = x.Title,
             Description = x.Description,
-            FishingDate = x.FishingDate,
-            FishingStartedAt = startedAt,
-            FishingEndedAt = x.FishingEndedAt,
+            FishingDate = ToFloatingLocalDateTime(x.FishingDate),
+            FishingStartedAt = ToFloatingLocalDateTime(startedAt),
+            FishingEndedAt = ToFloatingLocalDateTime(x.FishingEndedAt),
             LocationName = x.LocationName,
             Latitude = x.Latitude,
             Longitude = x.Longitude,

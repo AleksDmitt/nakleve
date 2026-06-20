@@ -263,11 +263,23 @@ namespace FishingApp.Api.Migrations
                     b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid?>("ForwardedFromUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ForwardedFromUserName")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsDeletedForAll")
                         .HasColumnType("boolean");
+
+                    b.Property<bool>("IsForwarded")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
 
                     b.Property<Guid?>("ReplyToMessageId")
                         .HasColumnType("uuid");

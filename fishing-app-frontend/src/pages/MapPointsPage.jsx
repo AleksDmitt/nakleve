@@ -11,7 +11,7 @@ import {
 import { apiRequest } from "../utils/apiClient";
 import "../styles/mapPoints.css";
 
-const DEFAULT_CENTER = [82.920179, 55.030878];
+const DEFAULT_CENTER = [55.006763, 82.926582];
 const USER_LOCATION_ZOOM = 14;
 const SEARCH_RESULT_ZOOM = 16;
 const NEW_POINT_ZOOM = 16;

@@ -4,7 +4,7 @@ import "../styles/yandexMap.css";
 
 const MIN_ZOOM = 2;
 const MAX_ZOOM = 19;
-const DEFAULT_CENTER = [82.920179, 55.030878];
+const DEFAULT_CENTER = [55.006763, 82.926582];
 const DEFAULT_ZOOM = 6;
 const PROGRAMMATIC_CENTER_LOCK_MS = 700;
 const PROGRAMMATIC_ZOOM_LOCK_MS = 450;

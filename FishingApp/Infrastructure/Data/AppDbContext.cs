@@ -395,6 +395,12 @@ public class AppDbContext : IdentityDbContext<AppUser, Microsoft.AspNetCore.Iden
                 .IsRequired()
                 .HasMaxLength(4000);
 
+            entity.Property(x => x.IsForwarded)
+                .HasDefaultValue(false);
+
+            entity.Property(x => x.ForwardedFromUserName)
+                .HasMaxLength(256);
+
             entity.HasOne(x => x.Chat)
                 .WithMany(x => x.Messages)
                 .HasForeignKey(x => x.ChatId)

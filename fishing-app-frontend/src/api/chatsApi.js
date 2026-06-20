@@ -95,6 +95,21 @@ export function deleteChatMessage(messageId, deleteForAll = false) {
   });
 }
 
+
+export function forwardChatMessage(messageId, targetChatIds) {
+  return apiRequest(`/Chats/messages/${messageId}/forward`, {
+    method: "POST",
+    body: JSON.stringify({ targetChatIds, messageIds: [messageId] }),
+  });
+}
+
+export function forwardChatMessages(messageIds, targetChatIds) {
+  return apiRequest("/Chats/messages/forward", {
+    method: "POST",
+    body: JSON.stringify({ messageIds, targetChatIds }),
+  });
+}
+
 export function createGroupChat(data) {
   return apiRequest("/Chats/group", {
     method: "POST",

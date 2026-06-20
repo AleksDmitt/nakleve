@@ -20,6 +20,10 @@ public class ChatMessageResponse
     public bool IsDeleted { get; set; }
     public bool IsDeletedForAll { get; set; }
 
+    public bool IsForwarded { get; set; }
+    public Guid? ForwardedFromUserId { get; set; }
+    public string? ForwardedFromUserName { get; set; }
+
     // true только для сообщений текущего пользователя, когда остальные участники чата уже открывали чат после отправки сообщения.
     public bool IsReadByOthers { get; set; }
 

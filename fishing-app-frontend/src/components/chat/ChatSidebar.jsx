@@ -125,7 +125,22 @@ export default function ChatSidebar({
       )}
 
       {!isSidebarCompact && message && (
-        <p className="error-text" style={{ margin: 0 }}>{message}</p>
+        <p
+          className={/переслан/i.test(String(message)) ? "chat-sidebar-message chat-sidebar-message--success" : "chat-sidebar-message chat-sidebar-message--error"}
+          style={{
+            margin: 0,
+            padding: "10px 12px",
+            borderRadius: "14px",
+            color: /переслан/i.test(String(message)) ? "#d1fae5" : "#fecaca",
+            background: /переслан/i.test(String(message)) ? "rgba(34, 197, 94, 0.13)" : "rgba(127, 29, 29, 0.18)",
+            border: /переслан/i.test(String(message)) ? "1px solid rgba(34, 197, 94, 0.28)" : "1px solid rgba(248, 113, 113, 0.32)",
+            fontSize: "13px",
+            fontWeight: 800,
+            lineHeight: 1.35,
+          }}
+        >
+          {message}
+        </p>
       )}
 
       <div

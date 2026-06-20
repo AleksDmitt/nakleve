@@ -658,6 +658,9 @@ public class ChatsController : ControllerBase
             SharedFishingEntry = MapSharedFishingEntry(message.SharedFishingEntry),
             IsDeleted = message.IsDeleted,
             IsDeletedForAll = message.IsDeletedForAll,
+            IsForwarded = message.IsForwarded,
+            ForwardedFromUserId = message.ForwardedFromUserId,
+            ForwardedFromUserName = message.ForwardedFromUserName,
             IsReadByOthers = false,
             Attachments = attachments
                 .Select(attachment => MapAttachment(attachment))
@@ -1229,6 +1232,9 @@ public class ChatsController : ControllerBase
                 SharedFishingEntry = MapSharedFishingEntry(x.SharedFishingEntry),
                 IsDeleted = x.IsDeleted,
                 IsDeletedForAll = x.IsDeletedForAll,
+                IsForwarded = x.IsForwarded,
+                ForwardedFromUserId = x.ForwardedFromUserId,
+                ForwardedFromUserName = x.ForwardedFromUserName,
                 IsReadByOthers = false,
                 Attachments = x.Attachments
                     .Select(a =>
@@ -1682,6 +1688,257 @@ public class ChatsController : ControllerBase
         }
 
         return Ok(response);
+    }
+
+
+    [HttpPost("messages/{messageId:guid}/forward")]
+    public async Task<IActionResult> ForwardMessage(Guid messageId, ForwardChatMessageRequest request)
+    {
+        request.MessageIds = new List<Guid> { messageId };
+        return await ForwardMessages(request);
+    }
+
+    [HttpPost("messages/forward")]
+    public async Task<IActionResult> ForwardMessages(ForwardChatMessageRequest request)
+    {
+        var currentUserId = GetCurrentUserId();
+
+        if (currentUserId == null)
+            return Unauthorized(new { message = "Пользователь не авторизован." });
+
+        var targetChatIds = (request.TargetChatIds ?? new List<Guid>())
+            .Where(x => x != Guid.Empty)
+            .Distinct()
+            .Take(20)
+            .ToList();
+
+        if (targetChatIds.Count == 0)
+            return BadRequest(new { message = "Выберите чат для пересылки." });
+
+        var sourceMessageIds = (request.MessageIds ?? new List<Guid>())
+            .Where(x => x != Guid.Empty)
+            .Distinct()
+            .Take(50)
+            .ToList();
+
+        if (sourceMessageIds.Count == 0)
+            return BadRequest(new { message = "Выберите сообщения для пересылки." });
+
+        var sourceMessages = await _context.ChatMessages
+            .Include(x => x.Chat)
+            .Include(x => x.User)
+            .Include(x => x.Attachments)
+            .Include(x => x.SharedFishingEntry)
+                .ThenInclude(x => x!.User)
+            .Include(x => x.SharedFishingEntry)
+                .ThenInclude(x => x!.Media)
+            .Where(x => sourceMessageIds.Contains(x.Id))
+            .ToListAsync();
+
+        if (sourceMessages.Count != sourceMessageIds.Count)
+            return NotFound(new { message = "Одно из выбранных сообщений не найдено." });
+
+        var sourceMessagesById = sourceMessages.ToDictionary(x => x.Id);
+        sourceMessages = sourceMessageIds
+            .Select(id => sourceMessagesById[id])
+            .OrderBy(x => x.SentAt)
+            .ThenBy(x => x.Id)
+            .ToList();
+
+        foreach (var sourceMessage in sourceMessages)
+        {
+            if (sourceMessage.IsDeletedForAll)
+                return BadRequest(new { message = "Удалённые сообщения нельзя переслать." });
+
+            var hasAccessToSourceChat = await HasAccessToChatAsync(sourceMessage.Chat, currentUserId.Value);
+            if (!hasAccessToSourceChat)
+                return Forbid();
+
+            var isHiddenForCurrentUser = await _context.HiddenChatMessages
+                .AnyAsync(x => x.MessageId == sourceMessage.Id && x.UserId == currentUserId.Value);
+
+            if (isHiddenForCurrentUser)
+                return NotFound(new { message = "Одно из выбранных сообщений не найдено." });
+
+            var hasText = !string.IsNullOrWhiteSpace(sourceMessage.Text);
+            var hasAttachments = sourceMessage.Attachments.Count > 0;
+            var hasSharedFishingEntry = sourceMessage.SharedFishingEntryId.HasValue;
+
+            if (!hasText && !hasAttachments && !hasSharedFishingEntry)
+                return BadRequest(new { message = "В одном из выбранных сообщений нет данных для пересылки." });
+
+            if (sourceMessage.SharedFishingEntryId.HasValue)
+            {
+                var sharedEntry = sourceMessage.SharedFishingEntry;
+                var canForwardEntry =
+                    sharedEntry != null &&
+                    (
+                        (sharedEntry.Visibility == FishingEntryVisibility.PublicProfile && sharedEntry.IsPublishedToFeed) ||
+                        sharedEntry.UserId == currentUserId.Value
+                    );
+
+                if (!canForwardEntry)
+                    return BadRequest(new { message = "Одну из выбранных записей нельзя переслать в другой чат." });
+            }
+        }
+
+        var currentUser = await _userManager.FindByIdAsync(currentUserId.Value.ToString());
+        if (currentUser == null)
+            return NotFound(new { message = "Пользователь не найден." });
+
+        var targetChats = await _context.Chats
+            .Where(x => targetChatIds.Contains(x.Id))
+            .ToListAsync();
+
+        if (targetChats.Count != targetChatIds.Count)
+            return BadRequest(new { message = "Один из выбранных чатов не найден." });
+
+        var targetChatsById = targetChats.ToDictionary(x => x.Id);
+
+        foreach (var targetChatId in targetChatIds)
+        {
+            var targetChat = targetChatsById[targetChatId];
+            var hasAccessToTargetChat = await HasAccessToChatAsync(targetChat, currentUserId.Value);
+
+            if (!hasAccessToTargetChat)
+                return Forbid();
+
+            if (targetChat.Type == ChatType.Private)
+            {
+                var otherUserId = targetChat.FirstUserId == currentUserId.Value
+                    ? targetChat.SecondUserId
+                    : targetChat.FirstUserId;
+
+                if (otherUserId.HasValue && await IsPrivateCommunicationBlockedAsync(currentUserId.Value, otherUserId.Value))
+                    return BadRequest(new { message = "В один из выбранных личных чатов нельзя отправлять сообщения." });
+
+                if (otherUserId.HasValue && await _context.Users.AnyAsync(x => x.Id == otherUserId.Value && x.IsBlocked))
+                    return BadRequest(new { message = "В один из выбранных чатов нельзя отправлять сообщения: аккаунт пользователя заблокирован." });
+            }
+
+            if (targetChat.Type == ChatType.Group)
+            {
+                var participant = await _context.ChatParticipants
+                    .FirstOrDefaultAsync(x => x.ChatId == targetChatId && x.UserId == currentUserId.Value);
+
+                if (participant == null || !CanSendToGroupChat(targetChat, participant))
+                {
+                    return BadRequest(new
+                    {
+                        message = targetChat.IsDeletedByOwner
+                            ? "Один из выбранных чатов удалён владельцем."
+                            : "В один из выбранных чатов нельзя отправлять сообщения."
+                    });
+                }
+            }
+        }
+
+        var responses = new List<ChatMessageResponse>();
+        var now = DateTime.UtcNow;
+        var sequence = 0;
+
+        foreach (var targetChatId in targetChatIds)
+        {
+            var targetChat = targetChatsById[targetChatId];
+            var notificationRecipients = await GetChatNotificationRecipientsAsync(targetChatId, currentUserId.Value);
+            var notificationChatName = targetChat.Type == ChatType.Group
+                ? targetChat.Name
+                : "Личное сообщение";
+            var voiceListenTargetUserIds = await GetVoiceListenTargetUserIdsAsync(targetChat, currentUserId.Value);
+            var voiceListenTargetCount = voiceListenTargetUserIds.Count;
+
+            foreach (var sourceMessage in sourceMessages)
+            {
+                var forwardedFromUserId = sourceMessage.IsForwarded
+                    ? sourceMessage.ForwardedFromUserId ?? sourceMessage.UserId
+                    : sourceMessage.UserId;
+
+                var forwardedFromUserName = !string.IsNullOrWhiteSpace(sourceMessage.ForwardedFromUserName)
+                    ? sourceMessage.ForwardedFromUserName
+                    : GetDisplayName(sourceMessage.User);
+
+                var forwardedMessage = new ChatMessage
+                {
+                    Id = Guid.NewGuid(),
+                    ChatId = targetChatId,
+                    UserId = currentUserId.Value,
+                    Text = !string.IsNullOrWhiteSpace(sourceMessage.Text) ? sourceMessage.Text : string.Empty,
+                    SentAt = now.AddMilliseconds(sequence++),
+                    IsDeleted = false,
+                    IsDeletedForAll = false,
+                    DeletedAt = null,
+                    ReplyToMessageId = null,
+                    SharedFishingEntryId = sourceMessage.SharedFishingEntryId,
+                    SharedFishingEntry = sourceMessage.SharedFishingEntry,
+                    IsForwarded = true,
+                    ForwardedFromUserId = forwardedFromUserId,
+                    ForwardedFromUserName = forwardedFromUserName
+                };
+
+                _context.ChatMessages.Add(forwardedMessage);
+
+                var forwardedAttachments = sourceMessage.Attachments
+                    .OrderBy(x => x.CreatedAt)
+                    .Select(sourceAttachment => new ChatMessageAttachment
+                    {
+                        Id = Guid.NewGuid(),
+                        ChatMessageId = forwardedMessage.Id,
+                        FileName = sourceAttachment.FileName,
+                        StoredFileName = sourceAttachment.StoredFileName,
+                        FileUrl = sourceAttachment.FileUrl,
+                        ContentType = sourceAttachment.ContentType,
+                        Size = sourceAttachment.Size,
+                        AttachmentType = sourceAttachment.AttachmentType,
+                        IsVoiceMessage = sourceAttachment.IsVoiceMessage,
+                        VoiceDurationMs = sourceAttachment.VoiceDurationMs,
+                        VoiceWaveform = sourceAttachment.VoiceWaveform,
+                        CreatedAt = forwardedMessage.SentAt
+                    })
+                    .ToList();
+
+                if (forwardedAttachments.Count > 0)
+                    _context.ChatMessageAttachments.AddRange(forwardedAttachments);
+
+                await _context.SaveChangesAsync();
+
+                var response = BuildChatMessageResponse(forwardedMessage, currentUser, null, forwardedAttachments);
+
+                foreach (var attachment in response.Attachments.Where(x => x.IsVoiceMessage))
+                {
+                    attachment.IsVoiceListenedByCurrentUser = false;
+                    attachment.VoiceListenedByOthersCount = 0;
+                    attachment.VoiceListenTargetCount = voiceListenTargetCount;
+                    attachment.IsVoiceListenedByOthers = voiceListenTargetCount == 0;
+                }
+
+                await _chatHub.Clients
+                    .Group($"chat_{targetChatId}")
+                    .SendAsync("ReceiveMessage", response);
+
+                var messagePreview = BuildMessageNotificationPreview(response);
+
+                foreach (var recipient in notificationRecipients)
+                {
+                    await _chatHub.Clients
+                        .Group($"user_{recipient.UserId}")
+                        .SendAsync("ChatNotificationChanged", new
+                        {
+                            chatId = targetChatId,
+                            messageId = response.Id,
+                            senderUserId = currentUserId,
+                            senderName = response.UserName,
+                            chatName = notificationChatName,
+                            messagePreview,
+                            isMuted = recipient.IsMuted,
+                            updatedAtUtc = DateTime.UtcNow
+                        });
+                }
+
+                responses.Add(response);
+            }
+        }
+
+        return Ok(responses);
     }
 
     [HttpDelete("messages/{messageId:guid}")]

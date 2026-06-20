@@ -23,6 +23,10 @@ public class ChatMessage
     public Guid? SharedFishingEntryId { get; set; }
     public FishingEntry? SharedFishingEntry { get; set; }
 
+    public bool IsForwarded { get; set; } = false;
+    public Guid? ForwardedFromUserId { get; set; }
+    public string? ForwardedFromUserName { get; set; }
+
     public ICollection<HiddenChatMessage> HiddenForUsers { get; set; } = new List<HiddenChatMessage>();
     public ICollection<ChatMessageAttachment> Attachments { get; set; } = new List<ChatMessageAttachment>();
 }
